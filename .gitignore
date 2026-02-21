@@ -1,2 +1,9 @@
 .idea/
 
+# Build artifacts
+**/target/
+.gradle/
+
+# Generated lockfiles for local test crates
+Public/TestSoroban/**/Cargo.lock
+fried-egg/Cargo.lock
