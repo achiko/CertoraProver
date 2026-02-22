@@ -1,8 +1,21 @@
 .idea/
 
 # Build artifacts
+**/build/
 **/target/
 .gradle/
+
+# Certora internal / local files
+**/.certora_internal/
+.certora_local_install/
+.tmp_tools/
+**/emv-*-certora-*/
+
+# Python cache
+**/__pycache__/
+
+# macOS
+.DS_Store
 
 # Generated lockfiles for local test crates
 Public/TestSoroban/**/Cargo.lock
