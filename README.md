@@ -97,6 +97,62 @@ pip install -r scripts/certora_cli_requirements.txt
 - You can run unit tests directly from IDEs like IntelliJ, or from the command line with `./gradlew test --tests <name_of_test_with_wildcards>`
     - These tests are in `CertoraProver/src/test` (and also in the test directories of the various subprojects)
 
+## Docker (EVM)
+
+The repository includes a fully containerized EVM workflow using Docker Compose.
+The image is built from source and runs as `linux/amd64` for broad Solidity compiler compatibility.
+On Apple Silicon, Docker will run this image via emulation.
+
+- Build the image:
+  ```commandline
+  docker compose build certora
+  ```
+
+- Show CLI help:
+  ```commandline
+  docker compose run --rm certora certoraRun.py -h
+  ```
+
+When `CERTORAKEY` is not set, `certoraRun.py` runs in local mode.
+
+- Run a local sample verification:
+  ```commandline
+  docker compose run --rm certora bash -lc 'cd Public/TestEVM/CVLCompilation/OptionalFunction && certoraRun.py Default.conf'
+  ```
+
+- Run a cloud verification (requires `CERTORAKEY`):
+  ```commandline
+  cp .env.example .env
+  # edit .env and set CERTORAKEY
+  docker compose run --rm certora bash -lc 'cd Public/TestEVM/CVLCompilation/OptionalFunction && certoraRun.py Default.conf --wait_for_results all'
+  ```
+
+### Pure Docker (no Docker Compose)
+
+If you prefer plain Docker commands, run these from the repository root.
+
+- Build the image:
+  ```commandline
+  docker build --platform linux/amd64 -t certora-evm:local .
+  ```
+
+- Show CLI help:
+  ```commandline
+  docker run --rm --platform linux/amd64 -it -v "$PWD":/work -w /work certora-evm:local certoraRun.py -h
+  ```
+
+- Run a local sample verification:
+  ```commandline
+  docker run --rm --platform linux/amd64 -it -v "$PWD":/work -w /work certora-evm:local bash -lc 'cd Public/TestEVM/CVLCompilation/OptionalFunction && certoraRun.py Default.conf'
+  ```
+
+- Run a cloud verification:
+  ```commandline
+  docker run --rm --platform linux/amd64 -it -e CERTORAKEY="$CERTORAKEY" -v "$PWD":/work -w /work certora-evm:local bash -lc 'cd Public/TestEVM/CVLCompilation/OptionalFunction && certoraRun.py Default.conf --wait_for_results all'
+  ```
+
+`CERTORAKEY` is optional for local runs and required for cloud verification.
+
 ## Contributing
 1. Fork the repo and open a pull request with your changes.
 2. Contact Certora at devhelp@certora.com once your PR is ready.

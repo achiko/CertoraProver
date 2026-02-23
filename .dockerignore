@@ -1,0 +1,12 @@
+.git
+.gradle
+**/build
+.idea
+.venv
+.tmp_tools
+.certora_internal
+.certora_local_install
+**/__pycache__
+Public/**/.certora_internal
+Public/**/emv-*
+Public/**/*.DS_Store

@@ -1,0 +1,15 @@
+services:
+  certora:
+    platform: linux/amd64
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: certora-evm:local
+    working_dir: /work
+    volumes:
+      - .:/work
+    environment:
+      CERTORAKEY: ${CERTORAKEY:-}
+    command: ["certoraRun.py", "-h"]
+    stdin_open: true
+    tty: true
