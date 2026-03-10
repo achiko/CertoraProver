@@ -141,6 +141,12 @@ If you prefer plain Docker commands, run these from the repository root.
   docker run --rm --platform linux/amd64 -it -v "$PWD":/work -w /work certora-evm:local certoraRun.py -h
   ```
 
+- Open an interactive shell:
+  ```commandline
+  docker run --rm --platform linux/amd64 -it -v "$PWD":/work -w /work certora-evm:local bash
+  ```
+  This opens an interactive shell in the container so you can run commands manually.
+
 - Run a local sample verification:
   ```commandline
   docker run --rm --platform linux/amd64 -it -v "$PWD":/work -w /work certora-evm:local bash -lc 'cd Public/TestEVM/CVLCompilation/OptionalFunction && certoraRun.py Default.conf'
