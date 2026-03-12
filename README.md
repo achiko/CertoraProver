@@ -102,6 +102,8 @@ pip install -r scripts/certora_cli_requirements.txt
 The repository includes a fully containerized EVM workflow using Docker Compose.
 The image is built from source and runs as `linux/amd64` for broad Solidity compiler compatibility.
 On Apple Silicon, Docker will run this image via emulation.
+The image ships multiple preinstalled Solidity compilers such as `solc8.17`, `solc8.28`, and `solc8.30`.
+Inside the container, the default `solc` executable is pinned to `0.8.30`.
 
 - Build the image:
   ```commandline
@@ -126,6 +128,45 @@ When `CERTORAKEY` is not set, `certoraRun.py` runs in local mode.
   # edit .env and set CERTORAKEY
   docker compose run --rm certora bash -lc 'cd Public/TestEVM/CVLCompilation/OptionalFunction && certoraRun.py Default.conf --wait_for_results all'
   ```
+
+### Choosing the Solidity compiler in Docker
+
+Use the Certora CLI flags to select the compiler for each run.
+
+- Switch one run to a specific compiler version:
+  ```commandline
+  docker compose run --rm certora bash -lc 'cd Public/TestEVM/CVLCompilation/OptionalFunction && certoraRun.py Default.conf --solc solc8.28'
+  ```
+
+- Compile different contracts with different compilers:
+  ```commandline
+  docker compose run --rm certora bash -lc 'cd /work && certoraRun.py path/to/Run.conf --compiler_map A=solc8.17,B=solc8.30'
+  ```
+
+- Change the Solidity target EVM version without changing the compiler binary:
+  ```commandline
+  docker compose run --rm certora bash -lc 'cd Public/TestEVM/CVLCompilation/OptionalFunction && certoraRun.py Default.conf --solc_evm_version cancun'
+  ```
+
+`--solc`, `--solc_map`, and `--compiler_map` choose which compiler executable runs.
+`--solc_evm_version` and `--solc_evm_version_map` change the `evmVersion` setting passed to that compiler.
+
+`solc-select use <version>` is not the reliable way to switch the default compiler in the current Docker image.
+The image pins `/usr/local/bin/solc` to `solc8.30`, so plain `solc` continues to resolve to that default unless you pass an explicit compiler executable such as `--solc solc8.28`.
+
+### Docker troubleshooting
+
+If a container run appears to ignore a compiler change, check the resolved executable first:
+
+```commandline
+docker compose run --rm certora bash -lc 'which solc && solc --version'
+```
+
+Then compare that with an explicit per-run override:
+
+```commandline
+docker compose run --rm certora bash -lc 'cd Public/TestEVM/CVLCompilation/OptionalFunction && certoraRun.py Default.conf --solc solc8.28'
+```
 
 ### Pure Docker (no Docker Compose)
 

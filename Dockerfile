@@ -77,6 +77,7 @@ RUN set -eux; \
       ln -sf "/root/.solc-select/artifacts/solc-$v/solc-$v" "/usr/local/bin/$solc_alias"; \
     done; \
     "$SOLC_SELECT_VENV/bin/solc-select" use 0.8.30; \
+    # Keep the container default deterministic; Docker users should override per run with --solc/--compiler_map.
     ln -sf /usr/local/bin/solc8.30 /usr/local/bin/solc; \
     rm -f /tmp/certora_cli_requirements.txt
 
