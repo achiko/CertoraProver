@@ -19,6 +19,8 @@
 package vc.data
 
 import com.certora.collect.*
+import config.Config
+import config.DestructiveOptimizationsModeEnum
 import datastructures.stdcollections.*
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.KSerializer
@@ -1309,15 +1311,21 @@ sealed class TACCmd : Serializable, ITACCmd {
             override fun toString(): String = super.toString() // opt out of generated toString
             override fun withMeta(metaMap: MetaMap) = this.copy(meta = metaMap)
 
+            @OptIn(Config.DestructiveOptimizationsOption::class)
             fun isViolated(model: CounterexampleModel): Boolean {
                 return when (val tv = model.valueAsTACValue(this.o)) {
                     TACValue.False -> true
                     TACValue.True -> false
                     else -> {
-                        throw CertoraException(
-                            type = CertoraErrorType.COUNTEREXAMPLE,
-                            msg = "Assert command with unexpected model assignment (`$tv`): `$this`"
-                        )
+                        if(Config.DestructiveOptimizationsMode.get() == DestructiveOptimizationsModeEnum.TWOSTAGE_INTERPRETED){
+                            //We allow that an assert may not have a value, which means it wasn't violated.
+                            false
+                        } else{
+                            throw CertoraException(
+                                type = CertoraErrorType.COUNTEREXAMPLE,
+                                msg = "Assert command with unexpected model assignment (`$tv`): `$this`"
+                            )
+                        }
                     }
                 }
             }
@@ -1350,9 +1358,15 @@ sealed class TACCmd : Serializable, ITACCmd {
             }
         }
 
-        interface DirectMemoryAccessCmd {
+        sealed interface DirectMemoryAccessCmd {
             val loc: TACSymbol
             val base: TACSymbol.Var
+
+            fun withLoc(loc: TACSymbol): TACCmd.Simple = when (this) {
+                is AssigningCmd.ByteLoad -> this.copy(loc = loc)
+                is AssigningCmd.ByteStore -> this.copy(loc = loc)
+                is AssigningCmd.ByteStoreSingle -> this.copy(loc = loc)
+            }
         }
 
         sealed interface StorageAccessCmd {
@@ -2199,6 +2213,12 @@ sealed class TACCmd : Serializable, ITACCmd {
             override fun toString(): String = super.toString() // opt out of generated toString
         }
 
+        data class AssignClzCmd(val lhs: TACSymbol.Var, val op1: TACSymbol, override val meta: MetaMap = MetaMap()) :
+            EVM() {
+            override fun argString(): String = "$lhs $op1"
+            override fun toString(): String = super.toString() // opt out of generated toString
+        }
+
         // BLOCKCHAIN
         @HookableOpcode("ADDRESS", "Address")
         data class AssignAddressCmd(@OpcodeOutput val lhs: TACSymbol.Var, override val meta: MetaMap = MetaMap()) : EVM() {
@@ -2720,6 +2740,7 @@ sealed class TACCmd : Serializable, ITACCmd {
             is EVM -> when (this) {
                 is EVM.AssigningCmd -> this.lhs
                 is EVM.AssignIszeroCmd -> this.lhs
+                is EVM.AssignClzCmd -> this.lhs
                 is EVM.AssignAddressCmd -> this.lhs
                 is EVM.AssignBalanceCmd -> this.lhs
                 is EVM.AssignOriginCmd -> this.lhs
@@ -2853,6 +2874,7 @@ sealed class TACCmd : Serializable, ITACCmd {
             is EVM.EVMRevertCmd -> treapSetOf(this.o1, this.o2)
             is EVM.EVMReturnCmd -> treapSetOf(this.o1, this.o2)
             is EVM.AssignIszeroCmd -> treapSetOf(this.op1)
+            is EVM.AssignClzCmd -> treapSetOf(this.op1)
             is EVM.AssignAddressCmd -> treapSetOf()
             is EVM.AssignBalanceCmd -> treapSetOf(this.op1)
             is EVM.AssignOriginCmd -> treapSetOf()
@@ -3010,6 +3032,7 @@ sealed class TACCmd : Serializable, ITACCmd {
             is EVM.EVMRevertCmd -> treapSetOf(this.o1, this.o2)
             is EVM.EVMReturnCmd -> treapSetOf(this.o1, this.o2)
             is EVM.AssignIszeroCmd -> treapSetOf(this.op1)
+            is EVM.AssignClzCmd -> treapSetOf(this.op1)
             is EVM.AssignAddressCmd -> treapSetOf()
             is EVM.AssignBalanceCmd -> treapSetOf(this.op1)
             is EVM.AssignOriginCmd -> treapSetOf()

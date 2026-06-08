@@ -22,7 +22,6 @@ import analysis.worklist.SimpleWorklist
 import log.Logger
 import log.LoggerTypes
 import datastructures.stdcollections.*
-import scene.IContractWithSource
 import scene.IScene
 import scene.ITACMethod
 import tac.CallId
@@ -43,7 +42,7 @@ object CalledContractResolver {
                      TACKeyword.MEMORY.isName { name -> it.cmd.base.namePrefix == name }
                 }?.let {
                     scratchMemResolveHeuristic(it)?.let {
-                        getAndResolve(it.wrapped)?.address?.asTACSymbol()?.asSym()
+                        getAndResolve(it.wrapped).singleOrNull()?.address?.asTACSymbol()?.asSym()
                     }
                 }
             }
@@ -58,15 +57,6 @@ object CalledContractResolver {
 
             data class StorageSlot(val contractAddress: BigInteger, val slotNumber: BigInteger?) :
                 ResolvableContractAddress()
-
-            /**
-            (param contractAddress the contract whose storage the struct is a part of (has some redundancy to [structContainer], sometimes, I suppose) )
-             * @param structSlotOffset offset of the struct field that contains the callee address of the call that we're resolving
-             */
-            data class StructSlot(
-                val structSlotOffset: BigInteger,
-                val structContainer: ResolvableContractAddress?
-            ) : ResolvableContractAddress()
 
             object THIS : ResolvableContractAddress()
             data class AlreadyResolved(val address: ContractInstanceAddress) : ResolvableContractAddress()
@@ -202,39 +192,6 @@ object CalledContractResolver {
                                 }
                             }
                         }
-                        is TACExpr.Vec.IntAdd -> {
-                            // assuming a struct access
-
-                            // this means there are two summands first summand is a constant
-                            if (e.ls.size != 2)
-                                return null
-
-                            val firstSummand = e.ls[0]
-                            if (firstSummand !is TACExpr.Sym.Const)
-                                return null
-
-                            // resolve the second summand through a recursive call
-                            val secondSummand = e.ls[1]
-                            if (secondSummand !is TACExpr.Sym)
-                                return null
-
-                            val secondResolved = when (secondSummand) {
-                                is TACExpr.Sym.Var -> {
-                                    rec(
-                                        defAnalysis.getDefCmd<TACCmd.Simple.AssigningCmd>(
-                                            secondSummand.s,
-                                            it.ptr
-                                        )!!.wrapped
-                                    )
-                                }
-                                is TACExpr.Sym.Const -> throw UnsupportedOperationException("getResolvableContractAddress for second summand $secondSummand of $it")
-                            }
-
-                            return ResolvableContractAddress.StructSlot(
-                                firstSummand.s.value,
-                                secondResolved
-                            )
-                        }
                         else -> return null
                     }
                 }
@@ -244,37 +201,27 @@ object CalledContractResolver {
             return rec(p)
         }
 
-        private fun resolveSlot(addr: BigInteger?, slotNr: BigInteger?): ContractInstanceAddress? {
-            if (slotNr == null || addr == null) return null
-            val iContractWithSource = scene.getContract(addr) as IContractWithSource
-            val address = iContractWithSource.src.state[slotNr] ?: return null
-            return ContractInstanceAddress(address)
-        }
-
-        private fun resolveStructSlot(structSlotInfo: ResolvableContractAddress.StructSlot): ContractInstanceAddress? {
-            val contractsWithSource = scene.getContracts().filterIsInstance<IContractWithSource>()
-            val callee =  contractsWithSource.firstMapped {
-                it.src.legacyStructLinking[structSlotInfo.structSlotOffset]
-            }
-            return callee?.let { ContractInstanceAddress(it) }
+        private fun resolveSlot(addr: BigInteger?, slotNr: BigInteger?): Set<ContractInstanceAddress> {
+            if (slotNr == null || addr == null) return emptySet()
+            val targets = scene.getContract(addr).resolvedLinks.bySlot[slotNr] ?: return emptySet()
+            return targets.mapToSet { ContractInstanceAddress(it) }
         }
 
         /**
-        get a [cmd] representing an assignment of the callee contract address, and resolves it to a number.
-         the number is the instance id of the contract we want to link to
+         * Given a [cmd] representing an assignment of the callee contract address,
+         * resolves it to a set of possible contract instance addresses.
          */
-        fun getAndResolve(cmd: LTACCmd): ContractInstanceAddress? =
+        fun getAndResolve(cmd: LTACCmd): Set<ContractInstanceAddress> =
             getResolvableContractAddress(cmd)?.let { resolvable ->
                 when (resolvable) {
                     is ResolvableContractAddress.StorageSlot -> resolveSlot(
                         resolvable.contractAddress,
                         resolvable.slotNumber
                     )
-                    ResolvableContractAddress.THIS -> ContractInstanceAddress(m.getContainingContract().instanceId)
-                    is ResolvableContractAddress.AlreadyResolved -> resolvable.address
-                    is ResolvableContractAddress.StructSlot -> resolveStructSlot(resolvable)
+                    ResolvableContractAddress.THIS -> setOf(ContractInstanceAddress(m.getContainingContract().instanceId))
+                    is ResolvableContractAddress.AlreadyResolved -> setOf(resolvable.address)
                 }
-            }
+            }.orEmpty()
 
         /* if in ptr we have M[loc], loc is tacM0x40, and we look for the prior mstore.
          * if it was for a constant, return that constant.
@@ -352,8 +299,8 @@ object CalledContractResolver {
         }
 
 
-        fun analyze(): MutableMap<CmdPointer, BigInteger> {
-            val ret = mutableMapOf<CmdPointer, BigInteger>()
+        fun analyze(): MutableMap<CmdPointer, Set<BigInteger>> {
+            val ret = mutableMapOf<CmdPointer, Set<BigInteger>>()
             g.code.keys.forEach { b ->
                 graph.elab(b).commands.forEach command@{ c ->
                     if (c.cmd !is TACCmd.Simple.CallCore && (c.cmd !is TACCmd.Simple.SummaryCmd || c.cmd.summ !is CallSummary)) {
@@ -371,13 +318,13 @@ object CalledContractResolver {
                         2. Linked libraries
                      */
                     if (to is TACSymbol.Const) {
-                        ret[c.ptr] = to.value
+                        ret[c.ptr] = setOf(to.value)
                     } else {
                         check(to is TACSymbol.Var)
                         defAnalysis.nontrivialDefSingleOrNull(to, c.ptr)?.let { defOfTo ->
                             val resolved = getAndResolve(graph.elab(defOfTo))
-                            if (resolved != null) {
-                                ret[c.ptr] = resolved.address
+                            if (resolved.isNotEmpty()) {
+                                ret[c.ptr] = resolved.map { it.address }.toSet()
                                 return@command
                             }
                         }
@@ -386,7 +333,7 @@ object CalledContractResolver {
                             c.ptr,
                             true
                         ).getAsConst()?.let { resolved ->
-                            ret[c.ptr] = resolved
+                            ret[c.ptr] = setOf(resolved)
                             return@command
                         }
                     }
@@ -398,8 +345,8 @@ object CalledContractResolver {
     }
 
     fun doAnalysis(m: ITACMethod, scene: IScene): CalleeResolution {
-        return Worker(m, scene).analyze().mapValues {
-            setOf(CallGraphBuilder.CalledContract.FullyResolved.ConstantAddress(it.value))
+        return Worker(m, scene).analyze().mapValues { (_, addresses) ->
+            addresses.mapToSet { CallGraphBuilder.CalledContract.FullyResolved.ConstantAddress(it) }
         }.let(::CalleeResolution)
     }
 }

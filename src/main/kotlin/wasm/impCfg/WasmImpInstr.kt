@@ -37,6 +37,7 @@ import wasm.impCfg.WasmImpInstr.createVarNameHelper
 import wasm.impCfg.WasmNumericExpr.reconstructExpr
 import wasm.impCfg.WasmNumericExpr.transformTmps
 import wasm.ir.*
+import sbf.tac.RESERVED_NUM_OF_ASSERTS
 import wasm.summarization.WasmCallSummarizer
 import wasm.tokens.WasmTokens.GLOBAL
 import wasm.tokens.WasmTokens.HAVOC
@@ -105,6 +106,9 @@ class WasmImpCfgContext(
 
     private var satisfyCount = 0
     fun allocSatisfyId() = satisfyCount++
+
+    private var assertCount = RESERVED_NUM_OF_ASSERTS
+    fun allocAssertId() = assertCount++
 }
 
 /**

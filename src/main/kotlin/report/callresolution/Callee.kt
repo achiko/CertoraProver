@@ -19,11 +19,13 @@ package report.callresolution
 
 import analysis.icfg.CallGraphBuilder.CalledContract
 import analysis.icfg.SummaryStack
-import analysis.storage.DisplayPath
 import config.Config
 import com.certora.collect.*
 import datastructures.stdcollections.*
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonArray
+import kotlinx.serialization.json.putJsonObject
 import log.*
 import report.TreeViewLocation
 import report.TreeViewRepJsonObjectBuilder
@@ -139,6 +141,32 @@ sealed class Callee: TreeViewReportable {
 
         abstract val unresolvedAddressStrategy: CalleeContractResolveStrategy
 
+        val storagePathLabel: String?
+            get() = (unresolvedAddressStrategy as? CalleeContractResolveStrategy.Resolved)?.let {
+                "${it.storageContractName}.${it.storageDisplayPath}"
+            }
+
+        /** The resolved 4-byte selector hex string (e.g., "0x6ffce53"), or `null` if unresolved. */
+        val calledSelector: String?
+            get() = (this as? WithResolvedSighashInfo)?.resolvedSighashHex
+
+        override val treeViewRepBuilder = TreeViewRepJsonObjectBuilder {
+            put(CallResolutionTableReportView.Attribute.NAME(), toUIString())
+            put(CallResolutionTableReportView.Attribute.JUMP_TO_DEFINITION(), TreeViewLocation.Empty)
+            calledSelector?.let {
+                put(CallResolutionTableReportView.Attribute.SELECTOR(), it)
+            }
+            (unresolvedAddressStrategy as? CalleeContractResolveStrategy.Resolved)?.let { resolved ->
+                putJsonObject(CallResolutionTableReportView.Attribute.STORAGE_PATH()) {
+                    put("baseContract", resolved.storageContractName)
+                    put("path", resolved.storageDisplayPath)
+                    putJsonArray("alternativeCallees") {
+                        resolved.alternativeCallees.forEach { add(JsonPrimitive(it)) }
+                    }
+                }
+            }
+        }
+
         data class ResolvedSighash(
             override val resolvedSighash: BigInteger,
             override val unresolvedAddressStrategy: CalleeContractResolveStrategy,
@@ -154,6 +182,7 @@ sealed class Callee: TreeViewReportable {
                     "callee contract unresolved; callee sighash resolved",
                     unresolvedAddressStrategy.toolTip
                 )
+                storagePathLabel?.let { put("storage path", it) }
             }
         }
 
@@ -170,6 +199,7 @@ sealed class Callee: TreeViewReportable {
                     "callee contract unresolved; callee sighash resolved",
                     unresolvedAddressStrategy.toolTip
                 )
+                storagePathLabel?.let { put("storage path", it) }
             }
         }
 
@@ -183,6 +213,7 @@ sealed class Callee: TreeViewReportable {
 
             override fun MutableMap<String, String>.buildCalleeInfoMap() {
                 buildCalleeResolveInfoMap("both callee contract and sighash are unresolved", sighashToolTip)
+                storagePathLabel?.let { put("storage path", it) }
             }
         }
     }
@@ -248,89 +279,42 @@ sealed class Callee: TreeViewReportable {
                 getContract: (BigInteger) -> IContractClassIdentifiers
             ): CalleeContractResolveStrategy =
                 if (storageLoadSnippet != null) {
-                    when (val displayPath = storageLoadSnippet.displayPath) {
-                        is DisplayPath.Root -> {
-                            LinkRootStorageSlot(
-                                getContract(storageLoadSnippet.contractInstance).name,
-                                displayPath.name,
-                                alternativeCallees
-                            )
-                        }
-                        is DisplayPath.FieldAccess -> {
-                            LinkStorageStructField(
-                                getContract(storageLoadSnippet.contractInstance).name,
-                                displayPath.field,
-                                alternativeCallees
-                            )
-                        }
-                        else -> {
-                            Unavailable
-                        }
-                    }
+                    val contractName = getContract(storageLoadSnippet.contractInstance).name
+                    val pathStr = storageLoadSnippet.displayPath.toPartiallyIndexedString()
+                    Resolved(contractName, pathStr, alternativeCallees)
                 } else {
                     Unavailable
                 }
         }
 
-        abstract val toolTip: String?
+        /**
+         * Suggests resolving this call via a spec-level `links` block, or `null` if no storage path is known.
+         */
+        val toolTip: String?
+            get() {
+                val resolved = this as? Resolved ?: return null
+                val targets = if (resolved.alternativeCallees.isNotEmpty()) {
+                    ". Possible targets: ${resolved.alternativeCallees.joinToString(", ")}"
+                } else {
+                    ""
+                }
+                return "To resolve this call, add a 'links' entry for '${resolved.storageDisplayPath}' " +
+                    "in contract '${resolved.storageContractName}'$targets " +
+                    "(use 'using' aliases for contract names)"
+            }
 
         @KSerializable
         object Unavailable : CalleeContractResolveStrategy() {
-            override val toolTip: String?
-                get() = null
             fun readResolve(): Any = Unavailable
             override fun hashCode() = hashObject(this)
         }
 
         @KSerializable
-        sealed class Link: CalleeContractResolveStrategy() {
-
-            abstract val contractName: String
-            abstract val slotSrcLabel: String
-            abstract val alternativeCallees: List<String>
-            abstract val linkName: String
-
-            override val toolTip: String?
-                get() = "To resolve the call, try " +
-                    "'--$linkName $contractName:$slotSrcLabel=${
-                        if (alternativeCallees.isEmpty()) {
-                            "[CONTRACT]"
-                        } else {
-                            alternativeCallees.joinToString(
-                                prefix = "[",
-                                postfix = "]",
-                                separator = " | "
-                            )
-                        }
-                    }'"
-
-        }
-
-        /**
-         * Hint for linking a root storage slot.
-         */
-        @KSerializable
-        data class LinkRootStorageSlot(
-            override val contractName: String,
-            override val slotSrcLabel: String,
-            override val alternativeCallees: List<String>
-        ) : Link() {
-            override val linkName: String
-                get() = "link"
-        }
-
-        /**
-         * Hint for linking a struct field.
-         */
-        @KSerializable
-        data class LinkStorageStructField(
-            override val contractName: String,
-            override val slotSrcLabel: String,
-            override val alternativeCallees: List<String>
-        ) : Link() {
-            override val linkName: String
-                get() = "struct_link"
-        }
+        data class Resolved(
+            val storageContractName: String,
+            val storageDisplayPath: String,
+            val alternativeCallees: List<String>
+        ) : CalleeContractResolveStrategy()
     }
 
     sealed class ResolvedCalleeAddress: UnresolvedCall() {
@@ -459,9 +443,15 @@ sealed class Callee: TreeViewReportable {
                 ) { scene.getContract(it) }
             }
 
-            fun createUnresolvedContractAddressCallee(resolvedSighash: BigInteger?, calleeResolution: CalledContract?, sigResolution: Set<BigInteger?>, rulePrefixMsg: String): Callee {
+            fun createUnresolvedContractAddressCallee(
+                resolvedSighash: BigInteger?,
+                calleeResolution: CalledContract?,
+                sigResolution: Set<BigInteger?>,
+                rulePrefixMsg: String,
+                strategyOverride: CalleeContractResolveStrategy? = null
+            ): Callee {
                 val contracts = resolvedSighash?.let { sighash -> scene.getContracts(sighash) }
-                val unresolvedAddressStrategy = resolveStrategy(
+                val unresolvedAddressStrategy = strategyOverride ?: resolveStrategy(
                     contracts,
                     calleeResolution
                 )
@@ -571,6 +561,18 @@ sealed class Callee: TreeViewReportable {
                                         )
                                     }
                                 }
+                            }
+                            is CalledContract.UnresolvedImmutable -> {
+                                val contractName = scene.getContract(calleeResolution.hostContractId).name
+                                val alternativeCallees = resolvedSighash?.let { scene.getContracts(it) }
+                                    ?.mapNotNull { if (it !is IClonedContract) { it.name } else { null } }
+                                    .orEmpty()
+                                val strategy = CalleeContractResolveStrategy.Resolved(
+                                    contractName,
+                                    calleeResolution.immutableName,
+                                    alternativeCallees
+                                )
+                                createUnresolvedContractAddressCallee(resolvedSighash, calleeResolution, sigResolution, rulePrefixMsg, strategy)
                             }
                             is CalledContract.UnresolvedRead,
                             is CalledContract.CreatedReference.Unresolved,

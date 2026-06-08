@@ -37,6 +37,7 @@ import utils.*
 import utils.Color.Companion.blue
 import utils.Color.Companion.cyan
 import vc.data.*
+import vc.data.SimplePatchingProgram.Companion.patchForEach
 import vc.data.TACCmd.Simple.AssigningCmd.AssignExpCmd
 import vc.data.tacexprutil.asVarOrNull
 import vc.data.tacexprutil.postTransform
@@ -69,6 +70,7 @@ class IntervalsRewriter(
             code: CoreTACProgram,
             repeat : Int = Config.intervalsRewriter.get(),
             handleLeinoVars: Boolean,
+            removeRemovableAsserts: Boolean = false,
             preserve : (TACSymbol.Var) -> Boolean = { false }//  = { it.namePrefix == IntervalsCalculator.tacM40Prefix }
         ) =
             code.letIf(repeat > 0) {
@@ -81,10 +83,24 @@ class IntervalsRewriter(
                     ).rewrite()
                 }
                 removeUnusedAssignments(result, expensive = true)
+                    .letIf(removeRemovableAsserts, ::removeRemovableAsserts)
             }
+
+        /** Removes any asserts/assumes that are known to be trivially true, and are marked as removable. */
+        private fun removeRemovableAsserts(code: CoreTACProgram) =
+            code.parallelLtacStream().mapNotNull { (ptr, cmd) ->
+                ptr.takeIf {
+                    (
+                        cmd is TACCmd.Simple.AssertCmd && cmd.o == TACSymbol.True ||
+                        cmd is TACCmd.Simple.Assume && cmd.condExpr == true.asTACExpr
+                    ) && (TACMeta.REMOVABLE_IF_TRIVIAL in cmd.meta)
+                }
+            }.patchForEach(code) { delete(it) }
 
         /** We eventually add this meta to variables which are known to be non zero via intervals analysis */
         val NON_ZERO_META = MetaKey.Nothing("tac.non.zero.var")
+        val NON_NEG_META = MetaKey.Nothing("tac.non.neg.var")
+        val NON_POS_META = MetaKey.Nothing("tac.non.pos.var")
     }
 
     private val graph = code.analysisCache.graph
@@ -220,9 +236,25 @@ class IntervalsRewriter(
                 val augmented = newE.postTransform { e ->
                     e.asVarOrNull
                         ?.takeIf { it.tag is Tag.Int || it.tag is Tag.Bits }
-                        ?.takeIf { 0 !in intervals.getS(ptr, it) }
-                        ?.withMeta(NON_ZERO_META)?.asSym()
-                        ?.also { changed = true }
+                        ?.let {
+                            var meta = MetaMap()
+                            val s = intervals.getS(ptr, it)
+                            if (0 !in s) {
+                                meta = meta.plus(NON_ZERO_META)
+                            }
+                            if (s.isNotEmpty() && s.isGe(ExtBig.Zero)) {
+                                meta = meta.plus(NON_NEG_META)
+                            }
+                            if (s.isNotEmpty() && s.isLe(ExtBig.Zero)) {
+                                meta = meta.plus(NON_POS_META)
+                            }
+                            if (!meta.isEmpty()) {
+                                changed = true
+                                it.withMeta(meta).asSym()
+                            } else {
+                                e
+                            }
+                        }
                         ?: e
                 }
                 // null if nothing changed, oherwise create the new command with the new expression.

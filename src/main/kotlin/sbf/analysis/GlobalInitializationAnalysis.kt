@@ -21,6 +21,7 @@ import sbf.cfg.*
 import sbf.disassembler.*
 import datastructures.stdcollections.*
 import sbf.SolanaConfig
+import sbf.callgraph.SolanaFunction
 import sbf.domains.INumValue
 import sbf.domains.IOffset
 import sbf.domains.SbfType
@@ -36,13 +37,55 @@ import utils.*
  *   Each value represents the content of `*(gv+(i*[stride]))` where `i` is the index of the value in [values]
  * - [locInst] is an instruction where [gv] is accessed. The instruction is needed so that we can ask pointer analysis which
  *   memory region [gv] points to, and from there to extract the corresponding TAC byte map.
+ * - [reg] is the register that holds the address of [gv] at [locInst]. For a load it is the base register;
+ *   for a `memcmp` it is either R1 or R2 depending on which operand points to [gv].
  */
 data class GlobalVarInitializer(val gv: SbfGlobalVariable,
                                 val largestOffset: Short,
                                 val stride: Short,
                                 val locInst: LocatedSbfInstruction,
+                                val reg: SbfRegister,
                                 val values: List<Long>)
 
+
+
+/**
+ * Read the initial values of a global variable from the ELF binary data.
+ *
+ * Reads [largestOffset] bytes starting at [address], splits them into words of [stride] bytes each,
+ * and converts each word to a signed [Long] (interpreting bytes as unsigned, respecting endianness).
+ */
+fun readGlobalVarValues(
+    address: Long,
+    largestOffset: Short,
+    stride: Short,
+    elf: IElfFileView
+): List<Long> {
+    val content = elf.getAsConstantString(address, largestOffset.toLong())
+    val bytes = content.map { it.code.toUByte() }
+    var j = 0
+    val word = ArrayList<UByte>()
+    val values = ArrayList<Long>()
+    for (byte in bytes) {
+        word.add(byte)
+        j++
+        if (j == stride.toInt()) {
+            // Converts the unsigned value a BigInteger
+            val bigInteger = if (elf.isLittleEndian()) {
+                word.reversed()
+            } else {
+                word
+            }.toPositiveBigInteger()
+            // Converts the positive BigInteger to a signed decimal
+            val decimalVal = bigInteger.toLong()
+            values.add(decimalVal)
+            // reset word
+            j = 0
+            word.clear()
+        }
+    }
+    return values
+}
 
 
 /**
@@ -73,23 +116,38 @@ fun <TNum: INumValue<TNum>, TOffset: IOffset<TOffset>> runGlobalInitializationAn
 
     val globalInit: MutableMap<SbfGlobalVariable, GlobalVarInitializer> = mutableMapOf()
     val globalUses: MutableMap<SbfGlobalVariable, List<LocatedSbfInstruction>> = mutableMapOf()
+    val globalUsedInMemcmp: MutableSet<GlobalVarInitializer> = mutableSetOf()
 
     for (b in cfg.getBlocks().values) {
         for (locInst in b.getLocatedInstructions()) {
             val inst = locInst.inst
-            // 1. check if a memory load
-            if (inst is SbfInstruction.Mem && inst.isLoad) {
-                val (width, base, offset) = inst.access
-                // 2. check that the load accesses a global variable
-                val gv = getGlobalVariable(locInst, base.reg, scalarAnalysis) ?: continue
-                val curOffset = (offset + width).toShort()
-                val maxOffset = globalInit.getOrPut(gv) { GlobalVarInitializer(gv, curOffset, 0, locInst, listOf()) }.largestOffset
-                // 3. update maximum accessed offset so far and stride for the global variable
-                if (curOffset > maxOffset) {
-                    globalInit[gv] = GlobalVarInitializer(gv, curOffset, gcd(maxOffset, curOffset), locInst, listOf())
+            when  {
+                inst is SbfInstruction.Mem && inst.isLoad -> {
+                    val (width, base, offset) = inst.access
+                    // 1. check that the load accesses a global variable
+                    val gv = getGlobalVariable(locInst, base.reg, scalarAnalysis) ?: continue
+                    val curOffset = (offset + width).toShort()
+                    val maxOffset = globalInit.getOrPut(gv) { GlobalVarInitializer(gv, curOffset, 0, locInst, base.reg.r, listOf()) }.largestOffset
+                    // 2. update maximum accessed offset so far and stride for the global variable
+                    if (curOffset > maxOffset) {
+                        globalInit[gv] = GlobalVarInitializer(gv, curOffset, gcd(maxOffset, curOffset), locInst, base.reg.r, listOf())
+                    }
+                    // Record all global uses so that we can later check some conditions
+                    globalUses[gv] = globalUses.getOrDefault(gv, listOf()) + listOf(locInst)
                 }
-                // Record all global uses so that we can later check some conditions
-                globalUses[gv] = globalUses.getOrDefault(gv, listOf()) + listOf(locInst)
+                inst is SbfInstruction.Call && inst.name == SolanaFunction.SOL_MEMCMP.syscall.name -> {
+                    // We only lower global variables that might contain pubkeys
+
+                    val len = (scalarAnalysis.typeAtInstruction(locInst, SbfRegister.R3) as? SbfType.NumType)?.value?.toLongOrNull()
+                    if (len != 32L) {
+                        continue
+                    }
+                    for (reg in listOf(SbfRegister.R1, SbfRegister.R2)) {
+                        val gv = getGlobalVariable(locInst, Value.Reg(reg), scalarAnalysis) ?: continue
+                        globalUsedInMemcmp.add(GlobalVarInitializer(gv, 32, 8, locInst, reg, listOf()))
+                    }
+                }
+                else -> {}
             }
         }
     }
@@ -115,7 +173,7 @@ fun <TNum: INumValue<TNum>, TOffset: IOffset<TOffset>> runGlobalInitializationAn
                     inst.access.offset % stride == 0
             })
         }
-        .map { populateValues(it, elf) }
+        .map { populateValues(it, elf) } + globalUsedInMemcmp.map { populateValues(it, elf) }
 }
 
 /** Return true if [locInst]  is used in a condition **/
@@ -150,31 +208,7 @@ private fun populateValues(
     elf: IElfFileView
 ): GlobalVarInitializer {
     check(gvInit.values.isEmpty()) {"populateValues expects an empty list of values"}
-
-    val gv = gvInit.gv
-    val content = elf.getAsConstantString(gv.address, gvInit.largestOffset.toLong())
-    val bytes = content.map { it.code.toUByte() }
-    var j = 0
-    val word = ArrayList<UByte>()
-    val values = ArrayList<Long>()
-    for (byte in bytes) {
-        word.add(byte)
-        j++
-        if (j == gvInit.stride.toInt()) {
-            // Converts the unsigned value a BigInteger
-            val bigInteger = if (elf.isLittleEndian()) {
-                word.reversed()
-            } else {
-                word
-            }.toPositiveBigInteger()
-            // Converts the positive BigInteger to a signed decimal
-            val decimalVal = bigInteger.toLong()
-            values.add(decimalVal)
-            // reset word
-            j = 0
-            word.clear()
-        }
-    }
+    val values = readGlobalVarValues(gvInit.gv.address, gvInit.largestOffset, gvInit.stride, elf)
     return gvInit.copy(values = values)
 }
 

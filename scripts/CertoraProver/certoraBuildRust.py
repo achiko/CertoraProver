@@ -83,6 +83,9 @@ def build_rust_app(context: CertoraContext) -> None:
             build_command.extend(["--tools-version", context.cargo_tools_version])
         context.rust_project_directory = Util.find_nearest_cargo_toml()
 
+    if getattr(context, 'solana_sbf_arch', None) is not None:
+        build_command.extend(["--arch", context.solana_sbf_arch])
+
     if context.cargo_features is not None:
         build_command.append(feature_flag)
         build_command.append(' '.join(context.cargo_features))

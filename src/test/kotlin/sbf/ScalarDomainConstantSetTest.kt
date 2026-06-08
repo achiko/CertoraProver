@@ -364,13 +364,13 @@ class ScalarDomainConstantSetTest {
                 "sol_memcpy_"()
                 // These assertions are true
                 r3 = r1[0]
-                assert(CondOp.GE(r3, 0))
+                //assert(CondOp.GE(r3, 0)) // trivially true
                 assert(CondOp.LE(r3, 10))
                 r3 = r1[8]
-                assert(CondOp.GE(r3, 0))
+                //assert(CondOp.GE(r3, 0)) // trivially true
                 assert(CondOp.LE(r3, 10))
                 r3 = r1[16]
-                assert(CondOp.GE(r3, 0))
+                //assert(CondOp.GE(r3, 0)) // trivially true
                 assert(CondOp.LE(r3, 10))
                 exit()
             }

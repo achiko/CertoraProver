@@ -1,7 +1,16 @@
 {
   "assertMessages": {},
-    "rules": {
-        "rule_shift_left": "SUCCESS",
-        "rule_shift_right": "SUCCESS"
+  "rules": {
+    "rule_shift_left": "SUCCESS",
+    "rule_shift_right": "SUCCESS",
+    "check_u128_wrapping_sub": "SUCCESS",
+    "check_u128_wrapping_sub_fail": "FAIL",
+    "check_u128_saturating_and_wrapping_sub_equiv": "SUCCESS",
+    "check_u128_saturating_and_wrapping_sub_equiv_fail": "FAIL",
+    "check_u128_checked_and_wrapping_sub_equiv": "SUCCESS",
+    "check_u128_wrapping_add": "SUCCESS",
+    "check_u128_saturating_and_wrapping_add_equiv": "SUCCESS",
+    "check_u128_saturating_and_wrapping_add_equiv_fail": "FAIL",
+    "check_u128_checked_and_wrapping_add_equiv": "SUCCESS"
   }
 }

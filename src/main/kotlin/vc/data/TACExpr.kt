@@ -53,6 +53,7 @@ import utils.ModZm.Companion.mulMod
 import utils.ModZm.Companion.shr
 import vc.data.TACBuiltInFunction.Hash.Companion.skeySort
 import vc.data.TACCmd.Simple.AnnotationCmd.Annotation
+import vc.data.TACCmd.Simple.AnnotationCmd.Companion.Annotation
 import vc.data.TACMeta.ACCESS_PATHS
 import vc.data.TACMeta.CVL_DISPLAY_NAME
 import vc.data.TACMeta.CVL_STRUCT_PATH
@@ -2394,6 +2395,8 @@ sealed class TACExpr : AmbiSerializable, ToLExpression, ToTACExpr {
             // See the test `Test/CVLCompilation/DirectStorageAccess/Default.conf` - `test_bytes_keys`.
             // If we do want to support quantification over bytes keys, we'll need to solve this and some more.
             private val validAccessPathIndexTags = setOf(Tag.Bool, Tag.Bit256, Tag.Int, skeySort)
+
+            operator fun invoke(o: TACExpr, k: MetaKey<Nothing>) = AnnotationExp(o, Annotation(k))
         }
     }
 

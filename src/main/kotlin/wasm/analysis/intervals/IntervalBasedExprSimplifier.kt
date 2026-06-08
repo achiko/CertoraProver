@@ -108,6 +108,22 @@ object IntervalBasedExprSimplifier {
                 e.o1
             }
 
+            is TACExpr.BinOp.SignExtend -> {
+                val i = state.interpret(e.o1) ?: return null
+                val x = state.interpret(e.o2) ?: return null
+
+                if (!i.x.isConstant || i.x.c >= 32.toBigInteger()) {
+                    return null
+                }
+
+                return ModZm.fromEvmSignExtend(i.x.c)?.run {
+                    when {
+                        x.x.ub <= maxSigned -> e.o2
+                        else -> null
+                    }
+                }
+            }
+
             else ->
                 null
         }

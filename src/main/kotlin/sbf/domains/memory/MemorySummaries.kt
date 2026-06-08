@@ -23,7 +23,7 @@ package sbf.domains
  * Memory summaries only allow to express whether r0 or (*W)(ri+O) points to X, where
  * - X is of type MemSummaryArgumentType
  * - W is {i8, i16, i32, i64}
- * - i is in {1,2,3,4,5}
+ * - i is in {0,1,2,3,4,5}
  * - O is a numerical offset
  *
  * Memory summaries can only express memory states *after* a call has been executed.
@@ -59,7 +59,7 @@ enum class MemSummaryArgumentType {
     PTR_EXTERNAL;
     companion object {
         fun from(input: String): MemSummaryArgumentType? {
-            return values().firstOrNull { it.name.equals(input, true) }
+            return MemSummaryArgumentType.entries.firstOrNull { it.name.equals(input, true) }
         }
     }
 }
@@ -78,19 +78,18 @@ data class MemSummaryArgument(val r: SbfRegister,
                               val allocatedSpace: ULong = 0UL,
                               val type: MemSummaryArgumentType) {
     init {
-        if (r > SbfRegister.R5_ARG) {
+        if (r > SbfRegister.R5) {
             throw MemorySummaryParseError("MemSummaryArgument: unexpected register $r")
         }
-        if (r == SbfRegister.R0_RETURN_VALUE) {
-            if (width.toInt() != 0) {
-                throw MemorySummaryParseError("MemSummaryArgument: expected non-zero width $width for $r")
+
+        if (r == SbfRegister.R0) {
+            if (!setOf(0,1,2,4,8).contains(width.toInt())) {
+                throw MemorySummaryParseError("MemorySummaryArgument: unexpected width $width for $r")
             }
-            if (offset != 0L) {
-                throw MemorySummaryParseError("MemorySummaryArgument: unexpected non-zero offset $offset for $r")
-            }
+
         } else {
             if (!setOf(1,2,4,8).contains(width.toInt())) {
-                throw MemorySummaryParseError("MemorySummaryArgument: unexpected width $width")
+                throw MemorySummaryParseError("MemorySummaryArgument: unexpected width $width for $r")
             }
         }
         if (allocatedSpace > 0UL) {
@@ -104,7 +103,7 @@ data class MemSummaryArgument(val r: SbfRegister,
     }
 
     override fun toString(): String {
-        return if (r == SbfRegister.R0_RETURN_VALUE) {
+        return if (r == SbfRegister.R0 && width.toInt() == 0 && offset.toInt() == 0) {
             "$r:$type"
         } else {
             "*u${width*8}($r+$offset):$type"
@@ -122,7 +121,7 @@ interface SummaryVisitor {
     fun processReturnArgument(locInst: LocatedSbfInstruction, type: MemSummaryArgumentType)
     /**
      * After function call to [locInst] the type of (*W)([reg]+[offset]) is [type] where
-     * - [reg] is r1,r2,r3,r4, or r5
+     * - [reg] is r0, r1,r2,r3,r4, or r5
      * - [offset] is a numerical offset and
      * - W is [width]*8 and [width] is in {1,2,4,8}
      * - [allocatedSpace] is the allocated space in bytes for argument if pointer
@@ -175,10 +174,12 @@ data class MemorySummaries(private val summaries: List<Pair<Regex, MemorySummary
             vis.noSummaryFound(locInst)
         } else {
             for (sumArg in summary.args) {
-                if (sumArg.r == SbfRegister.R0_RETURN_VALUE) {
+                // We can have information about R0 but also if R0 is a pointer we can have information about
+                // *(u64*)r0+0, *(u64*)r0+8, and so on.
+                if (sumArg.r == SbfRegister.R0 && sumArg.width.toInt() == 0 && sumArg.offset.toULong() == 0UL ) {
                     vis.processReturnArgument(locInst, sumArg.type)
                 } else {
-                    check(sumArg.r <= SbfRegister.R5_ARG) {"A summary can only refer to r1-r5"}
+                    check(sumArg.r <= SbfRegister.R5) {"A summary can only refer to r0-r5"}
                     vis.processArgument(locInst, sumArg.r, sumArg.offset, sumArg.width, sumArg.allocatedSpace, sumArg.type)
                 }
             }
@@ -199,6 +200,12 @@ data class MemorySummaries(private val summaries: List<Pair<Regex, MemorySummary
     fun isKnownAbortFn(fname: String) = getSummary(fname)?.isAbort == true
 
     companion object {
+        /**
+         * The parser for summary files is more restrictive than the full summary language.
+         * In particular, the following two constructs are supported by the language but not by the parser:
+         *  1. Dereferenced fields of a pointer result: `*(u64*)(r0+0)`, `*(u64*)(r0+8)`, etc., when `r0` is a pointer type.
+         *  2. Allocation-site sizes on pointer types.
+         */
         val grammar =
             """
     <ARGUMENT_TYPE>+ <FUNCTION_NAME>
@@ -238,7 +245,7 @@ data class MemorySummaries(private val summaries: List<Pair<Regex, MemorySummary
         fun readSpecFile(lines: List<String>, filename: String): MemorySummaries {
             fun parseRegister(str: String): SbfRegister {
                 val reg = SbfRegister.getByValue(str.toByte())
-                if (reg > SbfRegister.R5_ARG) {
+                if (reg > SbfRegister.R5) {
                     throw MemorySummaryParseError("can only use r0-r5")
                 }
                 return reg

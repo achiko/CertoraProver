@@ -31,12 +31,13 @@ import analysis.patterns.Info.Companion.setLastCmd
 import analysis.patterns.InfoKey.*
 import analysis.patterns.PatternHelpers.sha3
 import evm.MAX_EVM_UINT256
-import tac.Tag
+import tac.*
 import utils.*
 import vc.data.TACBuiltInFunction
 import vc.data.TACCmd
 import vc.data.TACExpr
 import vc.data.TACSymbol
+import java.io.Serializable
 import java.math.BigInteger
 
 private typealias PI = Pattern<Info>
@@ -104,8 +105,37 @@ object PatternHelpers {
 
     fun maybeNarrow(p1: PI) = p1 OR safeMathNarrow(p1)
 
+    fun <T : Serializable> PI.annotated(k: MetaKey<T>, pred: (T) -> Boolean = { true }) =
+        Pattern.FromAnnotationExp(
+            k = k,
+            extractor = { _, a -> (a.o as? TACExpr.Sym)?.s?.takeIf { pred(a.annot.v) } },
+            inner = this,
+            out = { _, i -> i }
+        )
+
+    fun PI.annotated(k: MetaKey<Nothing>) =
+        Pattern.FromAnnotationExp(
+            k = k,
+            extractor = { _, a -> (a.o as? TACExpr.Sym)?.s },
+            inner = this,
+            out = { _, i -> i }
+        )
+
     inline fun <reified T : Tag> lSymTag(key: InfoKey<LTACSymbol>? = null) =
         anyLSymbol.mapResult { s -> runIf(s.symbol.tag is T) { Info(key, s) } }
+
+    /**
+     * Follows the def chain through copies, matching when [p] returns true for the variable's symbol.
+     * If the chain ends at a complex expression without [p] being satisfied, the pattern fails.
+     */
+    fun defChainLSym(key: InfoKey<LTACSymbol>? = null, p: (TACSymbol) -> Boolean): PI =
+        Pattern.FromVar<Info>({ lcmd, v ->
+            if (p(v)) {
+                PatternMatcher.VariableMatch.Match(Info(key, LTACSymbol(lcmd.ptr, v))!!)
+            } else {
+                PatternMatcher.VariableMatch.Continue
+            }
+        })
 
     fun lSym256(key: InfoKey<LTACSymbol>) =
         lSymTag<Tag.Bit256>(key).onlyIf {
@@ -216,6 +246,7 @@ object PatternHelpers {
     infix fun PI.exp(p2: PI) = combiner(TACExpr.BinOp.Exponent::class.java, this, p2)
     infix fun PI.shl(p2: PI) = combiner(TACExpr.BinOp.ShiftLeft::class.java, this, p2)
     infix fun PI.shr(p2: PI) = combiner(TACExpr.BinOp.ShiftRightLogical::class.java, this, p2)
+    infix fun PI.shra(p2: PI) = combiner(TACExpr.BinOp.ShiftRightArithmetical::class.java, this, p2)
     infix operator fun PI.times(p2: PI) = commutativeCombiner(TACExpr.Vec.Mul::class.java, this, p2)
     infix operator fun PI.rem(p2: PI) = combiner(TACExpr.BinOp.Mod::class.java, this, p2)
     infix operator fun PI.div(p2: PI) = combiner(TACExpr.BinOp.Div::class.java, this, p2)
@@ -228,6 +259,8 @@ object PatternHelpers {
     infix fun PI.intAdd(p2: PI) = commutativeCombiner(TACExpr.Vec.IntAdd::class.java, this, p2)
     infix fun PI.anyAdd(p2: PI) = (this + p2) OR (this intAdd p2)
     infix fun PI.intDiv(p2: PI) = commutativeCombiner(TACExpr.BinOp.IntDiv::class.java, this, p2)
+
+    infix fun PI.bothDivs(p2: PI) = (this / p2) OR (this intDiv p2)
 
     infix fun PI.eq(p2: PI) = commutativeCombiner(TACExpr.BinRel.Eq::class.java, this, p2)
     infix fun PI.lt(p2: PI) = combiner(TACExpr.BinRel.Lt::class.java, this, p2)
@@ -244,6 +277,11 @@ object PatternHelpers {
     infix fun PI.symmLt(p2: PI) = (this lt p2) OR (p2 gt this)
     infix fun PI.symmGe(p2: PI) = (this ge p2) OR (p2 le this)
     infix fun PI.symmGt(p2: PI) = (this gt p2) OR (p2 lt this)
+
+    infix fun PI.symmSLe(p2: PI) = (this sLe p2) OR (p2 sGe this)
+    infix fun PI.symmSLt(p2: PI) = (this sLt p2) OR (p2 sGt this)
+    infix fun PI.symmSGe(p2: PI) = (this sGe p2) OR (p2 sLe this)
+    infix fun PI.symmSGt(p2: PI) = (this sGt p2) OR (p2 sLt this)
 
     infix fun PI.lOr(p2: PI) = commutativeCombiner(TACExpr.BinBoolOp.LOr::class.java, this, p2)
     infix fun PI.lAnd(p2: PI) = commutativeCombiner(TACExpr.BinBoolOp.LAnd::class.java, this, p2)

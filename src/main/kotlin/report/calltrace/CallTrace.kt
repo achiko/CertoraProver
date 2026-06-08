@@ -21,9 +21,11 @@ import analysis.*
 import config.ConfigType
 import report.RuleAlertReport
 import report.calltrace.CallInstance.InvokingInstance.CVLRootInstance
+import report.calltrace.formatter.CallTraceValueFormatter
 import report.calltrace.generator.generateCallTrace
 import report.calltrace.printer.CallTracePrettyPrinter
 import report.calltrace.printer.DebugAdapterProtocolStackMachine
+import solver.CounterexampleModel
 import spec.cvlast.*
 import utils.*
 import vc.data.*
@@ -107,7 +109,9 @@ sealed class CallTrace {
             }
     }
 
-    class Failure(override val callHierarchyRoot: CVLRootInstance, val exception: CallTraceException, printer: CallTracePrettyPrinter?, override val debugAdapterCallTrace: DebugAdapterProtocolStackMachine?) : CallTrace() {
+    class Failure(override val callHierarchyRoot: CVLRootInstance = CVLRootInstance("",
+        CallTraceValueFormatter(CounterexampleModel.Empty)
+    ), val exception: CallTraceException, printer: CallTracePrettyPrinter? = null, override val debugAdapterCallTrace: DebugAdapterProtocolStackMachine? = null) : CallTrace() {
         init {
             val instance = CallInstance.ErrorInstance.EarlyExit()
             callHierarchyRoot.addChild(instance)

@@ -1,0 +1,24 @@
+[package]
+name = "tests"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+path = "src/tests.rs"
+
+[profile.dev]
+split-debuginfo = "unpacked"
+
+[features]
+certora = []
+
+[dependencies]
+cvlr = "0.6.1"
+paste = "1"
+
+[package.metadata.certora]
+sources = ["Cargo.toml", "src/**/*.rs"]
+solana_inlining = ["./cvt_inlining_core.txt"]
+solana_summaries = ["./cvt_summaries_core.txt"]

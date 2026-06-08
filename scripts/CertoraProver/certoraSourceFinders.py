@@ -220,6 +220,33 @@ def handle_unsupported_decl_value(source_snippet: str,
         False)
 
 
+def is_idempotent_index_expr(expr: Dict[str, Any]) -> bool:
+    """Check if an index expression is idempotent (safe to duplicate without side effects).
+    Only allows Identifier, Literal, and arithmetic BinaryOperations (recursively)."""
+    node_type = expr.get("nodeType")
+    if node_type in ("Identifier", "Literal"):
+        return True
+    if node_type == "BinaryOperation" and expr.get("operator") in ("+", "-", "*", "/", "%"):
+        left = expr.get("leftExpression", {})
+        right = expr.get("rightExpression", {})
+        return is_idempotent_index_expr(left) and is_idempotent_index_expr(right)
+    return False
+
+
+def has_non_idempotent_index(left_hand_side: Dict[str, Any]) -> bool:
+    """Walk the LHS chain and check that all IndexAccess indexExpressions are idempotent."""
+    node = left_hand_side
+    while node["nodeType"] in ("MemberAccess", "IndexAccess"):
+        if node["nodeType"] == "IndexAccess":
+            index_expr = node.get("indexExpression", {})
+            if not is_idempotent_index_expr(index_expr):
+                return True
+            node = node["baseExpression"]
+        else:  # MemberAccess
+            node = node["expression"]
+    return False
+
+
 def handle_multi_def(source_snippet: str, assignment: Dict[str, Any]) -> LocalAssignmentFinderData:
     return handle_unsupported_def_value(source_snippet, assignment)
 
@@ -259,6 +286,12 @@ def handle_single_def(source_snippet: str, finder_running_id: int, assignment: D
             instrumentation_logger.debug(
                 f"The assignment {source_snippet} assigns to a storage variable, skipping")
             return handle_to_skip()
+
+        # check that all index expressions in the LHS chain are idempotent (no side effects like i++)
+        if has_non_idempotent_index(left_hand_side):
+            instrumentation_logger.debug(
+                f"The assignment {source_snippet} has a non-idempotent index expression, treating as unsupported")
+            return handle_unsupported_def_value(source_snippet, assignment)
 
         type_string = left_hand_side["typeDescriptions"]["typeString"]
 

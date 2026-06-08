@@ -484,6 +484,12 @@ MultiLineComment = \/\*[^*]*\*+([^/*][^*]*\*+)*\/
     tableBuilder.registerTokenEmit(currentSymbol);
     return currentSymbol;
 }
+<YYINITIAL> "links" {
+    debug(" LINKS");
+    ComplexSymbolFactory.ComplexSymbol currentSymbol = symbol(sym.LINKS, yytext());
+    tableBuilder.registerTokenEmit(currentSymbol);
+    return currentSymbol;
+}
 <YYINITIAL> "description" {
     debug(" DESCRIPTION");
     ComplexSymbolFactory.ComplexSymbol currentSymbol = symbol(sym.DESCRIPTION, yytext());
@@ -555,6 +561,18 @@ MultiLineComment = \/\*[^*]*\*+([^/*][^*]*\*+)*\/
     ComplexSymbolFactory.ComplexSymbol currentSymbol = symbol(sym.OVERRIDE, yytext());
     tableBuilder.registerTokenEmit(currentSymbol);
     return currentSymbol;
+}
+<YYINITIAL> "event" {
+   debug(" event");
+   ComplexSymbolFactory.ComplexSymbol currentSymbol = symbol(sym.EVENT, yytext());
+   tableBuilder.registerTokenEmit(currentSymbol);
+   return currentSymbol;
+}
+<YYINITIAL> "indexed" {
+   debug(" indexed");
+   ComplexSymbolFactory.ComplexSymbol currentSymbol = symbol(sym.INDEXED, yytext());
+   tableBuilder.registerTokenEmit(currentSymbol);
+   return currentSymbol;
 }
 <YYINITIAL> "<"|">"|"<="|">="|"=="|"!=" {
     debug(" Relop %s\n",yytext());

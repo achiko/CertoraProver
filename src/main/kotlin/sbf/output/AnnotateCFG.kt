@@ -29,6 +29,8 @@ import sbf.sbfLogger
 import sbf.support.SolanaError
 import sbf.support.SolanaInternalError
 
+private const val warnMsg = "annotateWithTypes skipped due to some error in the scalar analysis.\nHere more details about the error:\n"
+
 /**
  * Annotate [cfg] with types extracted from [ScalarAnalysis].
  ***/
@@ -95,19 +97,10 @@ private fun <TNum: INumValue<TNum>, TOffset: IOffset<TOffset>> annotateWithTypes
 
         annotateWithTypes(cfg, scalarAnalysis)
     } catch (e: SolanaError) {
-        sbfLogger.info {
-            "annotateWithTypes skipped due to some error in the scalar analysis\n" +
-            "Here more details about the error:\n" +
-            "$e"
-        }
+        sbfLogger.warn { "$warnMsg$e" }
     } catch (e: SolanaInternalError) {
-        sbfLogger.info {
-                "annotateWithTypes skipped due to some error in the scalar analysis\n" +
-                "Here more details about the error:\n" +
-                "$e"
-        }
+        sbfLogger.warn { "$warnMsg$e" }
     }
-
 }
 
 /**

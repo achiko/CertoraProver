@@ -824,8 +824,8 @@ function createNodeElement(v, selectedSet) {
     var val = getCexValue(v);
     if (val) {
         var tt = document.getElementById('dataflow-tooltip');
-        el.onmouseenter = function () { if (tt) { tt.textContent = v + ' = ' + val; tt.style.display = 'block'; } };
-        el.onmouseleave = function () { if (tt) tt.style.display = 'none'; };
+        el.onmouseenter = function (e) { if (tt) { tt.textContent = v + ' = ' + val; setStyles(tt, { left: (e.clientX + 10) + 'px', top: (e.clientY + 10) + 'px', visibility: 'visible', opacity: '1' }); } };
+        el.onmouseleave = function () { if (tt) { tt.style.visibility = 'hidden'; tt.style.opacity = '0'; } };
         el.onmousemove = function (e) { if (tt) setStyles(tt, { left: (e.clientX + 10) + 'px', top: (e.clientY + 10) + 'px' }); };
     }
     return el;
@@ -916,7 +916,7 @@ function initTacDump() {
     // Create dataflow tooltip element for mouse-following tooltips
     var dfTooltip = document.createElement('div');
     dfTooltip.id = 'dataflow-tooltip';
-    dfTooltip.style.cssText = 'position:fixed;background:#333;color:#fff;padding:4px 8px;border-radius:4px;font-size:11px;pointer-events:none;z-index:10000;display:none;max-width:300px;word-break:break-all;';
+    dfTooltip.style.cssText = 'position:fixed;background:#333;color:#fff;padding:4px 8px;border-radius:4px;font-size:11px;pointer-events:none;z-index:10000;visibility:hidden;opacity:0;max-width:300px;word-break:break-all;';
     document.body.appendChild(dfTooltip);
 
     // Set up tooltip event listeners

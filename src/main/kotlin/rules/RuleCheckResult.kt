@@ -19,6 +19,7 @@ package rules
 
 import allocator.Allocator
 import config.Config
+import config.DestructiveOptimizationsModeEnum
 import config.OUTPUT_NAME_DELIMITER
 import config.ReportTypes
 import datastructures.NonEmptyList
@@ -30,6 +31,8 @@ import report.callresolution.*
 import report.calltrace.*
 import report.calltrace.formatter.*
 import report.calltrace.generator.generateCallTrace
+import report.calltrace.interpreter.INTERPRETATION_FAILED_MESSAGE
+import report.calltrace.interpreter.TACProgramInterpreter
 import report.dumps.UnsolvedSplitInfo
 import report.dumps.generateUnsolvedSplitCodeMap
 import scene.ISceneIdentifiers
@@ -601,7 +604,6 @@ sealed class RuleCheckResult(open val rule: IRule) {
                  * that violates the CVL rule.
                  * [localAssignments] are the assignments to the local CVL variables in the rule,
                  * derived from the counter-example model [model], chosen by the SMT.
-                 * [assertSlice] is used to track the reason for the violation of the rule.
                  * [minHashingBoundNeeded] is the maximum lengtht of an array along the trace;
                  * only when using [Config.HashingBoundDetectionMode].
                  */
@@ -616,8 +618,8 @@ sealed class RuleCheckResult(open val rule: IRule) {
                     val callTrace: CallTrace? = null,
                     val localAssignments: LocalAssignments?,
                     val model: CounterexampleModel = CounterexampleModel.Empty,
-                    val assertSlice: Result<DynamicSlicerResults?> = Result.success(null),
                     val minHashingBoundNeeded: BigInteger? = null,
+                    val alerts: List<RuleAlertReport>
                 ) : BasicDataContainer {
                     val exampleId: Int = Allocator.getFreshId(Allocator.Id.COUNTEREXAMPLE)
 
@@ -654,7 +656,6 @@ sealed class RuleCheckResult(open val rule: IRule) {
                 )
 
                 companion object {
-
                     private fun allSymbolsInProgram(program: CoreTACProgram) = program.symbolTable.vars
 
                     /**
@@ -692,11 +693,13 @@ sealed class RuleCheckResult(open val rule: IRule) {
                     /**
                      * Generates counter-examples from [res] and wraps them using [WithCounterExamples].
                      */
+                    @OptIn(Config.DestructiveOptimizationsOption::class)
                     operator fun invoke(
                         scene: ISceneIdentifiers,
                         rule: IRule,
                         res: Verifier.JoinedResult.Failure,
-                        origProgWithAssertIdMeta: CoreTACProgram,
+                        optimizedProgram: CoreTACProgram,
+                        unoptimizedProgram: CoreTACProgram?,
                         callResolutionTableFactory: CallResolutionTable.Factory,
                         isOptimizedRuleFromCache: IsFromCache,
                         isSolverResultFromCache: IsFromCache,
@@ -704,24 +707,49 @@ sealed class RuleCheckResult(open val rule: IRule) {
                         val ruleCallString: String = rule.parentIdentifier?.displayName ?: rule.declarationId
 
                         val examples = res.examplesInfo.mapIndexed { exampleIndex, exampleInfo ->
-                            val model = CounterexampleModel.fromSMTResult(exampleInfo, res.simpleSimpleSSATAC)
+                            val smtModel = CounterexampleModel.fromSMTResult(exampleInfo, res.simpleSimpleSSATAC)
+
+                            /* The violated assert depends on meta that is only present in the optimized program, thus we take it here.*/
+                            val assertionMessages: List<RuleFailureMeta.ViolatedAssert> =
+                                listOfNotNull(smtModel.findMetaOfFirstViolatedAssert(
+                                    optimizedProgram, rule))
+
+                            val (model, program, alerts) = if (Config.DestructiveOptimizationsMode.get() == DestructiveOptimizationsModeEnum.TWOSTAGE_INTERPRETED) {
+                                checkNotNull(unoptimizedProgram) {
+                                    "In mode ${DestructiveOptimizationsModeEnum.TWOSTAGE_INTERPRETED}, the unoptimized program must not be null"
+                                }
+                                val interpreterCode = TACProgramInterpreter.createInterpretedProgram(unoptimizedProgram, smtModel, optimizedProgram)
+                                val interpreter = TACProgramInterpreter(interpreterCode)
+                                interpreter.interpretProgram()?.let { res ->
+                                    Triple(res.cex, interpreterCode, res.toRuleAlerts())
+                                } ?: return@mapIndexed CounterExample(
+                                    dumpGraphLink = cexDumpGraphLinkOf(rule, exampleIndex),
+                                    failureResultMeta = assertionMessages,
+                                    rule = rule,
+                                    callTrace = CallTrace.Failure(exception = CallTraceException(INTERPRETATION_FAILED_MESSAGE)),
+                                    localAssignments = null,
+                                    alerts = listOf(RuleAlertReport.Error(INTERPRETATION_FAILED_MESSAGE))
+                                )
+                            } else {
+                                check(unoptimizedProgram == null) {
+                                    "In mode ${Config.DestructiveOptimizationsMode.get()}, the unoptimized program must be null"
+                                }
+                                Triple(smtModel, optimizedProgram, listOf())
+                            }
 
                             val addrToContract =
-                                modelAddressToContractInfo(model, allSymbolsInProgram(origProgWithAssertIdMeta))
+                                modelAddressToContractInfo(model, allSymbolsInProgram(program))
 
                             val formatter = CallTraceValueFormatter(model, addrToContract)
 
-                            val localAssignments = LocalAssignments(model, origProgWithAssertIdMeta, addrToContract, formatter, scene)
+                            val localAssignments = LocalAssignments(model, program, addrToContract, formatter, scene)
                             localAssignments.logForTests()
-
-                            val assertionMessages: List<RuleFailureMeta.ViolatedAssert> =
-                                listOfNotNull(model.findMetaOfFirstViolatedAssert(origProgWithAssertIdMeta, rule))
 
                             val callTrace = generateCallTrace(
                                 rule,
                                 exampleIndex,
                                 model,
-                                origProgWithAssertIdMeta,
+                                program,
                                 formatter,
                                 scene,
                                 ruleCallString,
@@ -735,28 +763,6 @@ sealed class RuleCheckResult(open val rule: IRule) {
                                     Logger.alwaysError(
                                         "Error building the contract call resolution table for the rule: ${rule.declarationId}",
                                     )
-                                }
-
-                            val assertSlice: Result<DynamicSlicerResults?> =
-                                if (callTrace is CallTrace.ViolationFound) {
-                                    runCatching {
-                                        DynamicSlicer(
-                                            origProgWithAssertIdMeta,
-                                            model,
-                                            scene
-                                        ).sliceViolatedAssertCond(
-                                            callTrace.violatedAssertCond,
-                                            callTrace.violatedAssert.ptr
-                                        )
-                                    }.onFailure {
-                                        Logger.alwaysError(
-                                            "Error building dynamic assert slice for violation of rule: ${rule.declarationId}",
-                                            it
-                                        )
-                                    }
-
-                                } else {
-                                    Result.success(null)
                                 }
 
                             val description = "\n" + when (rule) {
@@ -792,8 +798,8 @@ sealed class RuleCheckResult(open val rule: IRule) {
                                 callTrace,
                                 localAssignments,
                                 model,
-                                assertSlice,
-                                minHashingBoundNeeded
+                                minHashingBoundNeeded,
+                                alerts + listOfNotNull(callTrace.alertReport)
                             )
                             counterExample
                         }

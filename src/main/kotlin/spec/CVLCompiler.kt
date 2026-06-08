@@ -28,8 +28,6 @@ import analysis.CommandWithRequiredDecls.Companion.mergeMany
 import analysis.CommandWithRequiredDecls.Companion.withDecls
 import analysis.EthereumVariables.extcodesize
 import analysis.EthereumVariables.setLastReverted
-import analysis.storage.DisplayPath
-import analysis.storage.singleDisplayPathOrNull
 import bridge.EVMExternalMethodInfo
 import bridge.SourceLanguage
 import com.certora.collect.*
@@ -43,7 +41,6 @@ import kotlinx.serialization.UseSerializers
 import log.*
 import report.calltrace.CVLReportLabel
 import report.calltrace.printer.StackEntry
-import rules.genericrulecheckers.BuiltInRuleCustomChecker
 import scene.*
 import spec.CVLCompiler.CallIdContext.Companion.defaultBaseCallId
 import spec.cvlast.*
@@ -53,7 +50,6 @@ import spec.cvlast.transformations.VariableSubstitutor
 import spec.cvlast.transformer.CVLCmdTransformer
 import spec.cvlast.transformer.CVLExpTransformer
 import spec.cvlast.typechecker.CVLTypeTypeChecker
-import spec.cvlast.typedescriptors.EVMTypeDescriptor
 import spec.cvlast.typedescriptors.VMTypeDescriptor
 import spec.cvlast.typedescriptors.VMValueTypeDescriptor
 import spec.rules.CVLSingleRule
@@ -92,6 +88,7 @@ import vc.data.TACMeta.IGNORE_IN_CALLTRACE
 import vc.data.TACMeta.RESET_STORAGE
 import vc.data.TACMeta.SATISFY_ID
 import vc.data.TACMeta.SCALARIZATION_SORT
+import vc.data.TACMeta.STORAGE_KEY
 import vc.data.tacexprutil.ExprUnfolder
 import verifier.ContractUtils.recordAggregatedTransformationStats
 import java.io.Serializable
@@ -608,9 +605,9 @@ class CVLCompiler(
 
             is CVLCmd.Simple.AssumeCmd.AssumeInvariant -> {
                 if(Config.RequireInvariantsPreRuleSemantics.get()){
-                    compileAssumeInvariantGlobally(cmd, allocatedTACSymbols)
+                    compileAssumeInvariantGlobally(cmd, allocatedTACSymbols, compilationEnvironment)
                 } else{
-                    compileAssumeInvariant(cmd, allocatedTACSymbols)
+                    compileAssumeInvariant(cmd, allocatedTACSymbols, compilationEnvironment)
                 }
             }
 
@@ -1599,10 +1596,34 @@ class CVLCompiler(
         }
     }
 
+    fun ParametricInstantiation<CVLTACProgram>.wrapAsAssumeInvariant(invariantId: String): CVLTACProgram {
+        // Creating a labelId to be able to map start and end of the currently compiled command in [instrumentation.transformers.RequireInvariantTransformer]
+        val labelId = Allocator.getFreshId(Allocator.Id.REQUIRE_INVARIANT_CMDS)
+        val meta = TACMeta.RequireInvariant(labelId, invariantId)
+        return this.getAsSimple()
+            .wrapWith(
+                CommandWithRequiredDecls(
+                    listOf(
+                        TACCmd.Simple.AnnotationCmd(
+                            CVL_ASSUME_INVARIANT_CMD_START,
+                            meta
+                        )
+                    )
+                ),
+                CommandWithRequiredDecls(
+                    listOf(
+                        TACCmd.Simple.AnnotationCmd(
+                            CVL_ASSUME_INVARIANT_CMD_END,
+                            meta
+                        )
+                    )
+                )
+            )
+    }
     /**
      * @param allocatedTACSymbols is imperatively extended with additional symbols
      */
-    private fun compileAssumeInvariant(cmd: CVLCmd.Simple.AssumeCmd.AssumeInvariant, allocatedTACSymbols: TACSymbolAllocation): ParametricInstantiation<CVLTACProgram> {
+    private fun compileAssumeInvariant(cmd: CVLCmd.Simple.AssumeCmd.AssumeInvariant, allocatedTACSymbols: TACSymbolAllocation, compilationEnvironment: CompilationEnvironment): ParametricInstantiation<CVLTACProgram> {
         val inv =
             symbolTable.lookUpNonFunctionLikeSymbol(cmd.id, cmd.scope)?.symbolValue as? CVLInvariant
                 ?: error("Failed to find invariant ${cmd.id}")
@@ -1621,8 +1642,8 @@ class CVLCompiler(
                 cmd.scope
             ),
             allocatedTACSymbols,
-            CompilationEnvironment()
-        )
+            compilationEnvironment
+        ).wrapAsAssumeInvariant(cmd.id).asSimple()
     }
 
 
@@ -1648,7 +1669,7 @@ class CVLCompiler(
      * then [instrumentation.transformers.RequireInvariantTransformer] takes care of moving the program toBePlacedAfterRuleParamSetup to the correct location
      * (given by where the [CVL_ASSUME_INVARIANT_TARGET] is placed).
      */
-    private fun compileAssumeInvariantGlobally(cmd: CVLCmd.Simple.AssumeCmd.AssumeInvariant, allocatedTACSymbols: TACSymbolAllocation): ParametricInstantiation<CVLTACProgram> {
+    private fun compileAssumeInvariantGlobally(cmd: CVLCmd.Simple.AssumeCmd.AssumeInvariant, allocatedTACSymbols: TACSymbolAllocation, compilationEnvironment: CompilationEnvironment): ParametricInstantiation<CVLTACProgram> {
         fun CVLTACProgram.ignoreInCallTrace(): CVLTACProgram =
             this.copy(code = this.code.mapValues { (_, cmds) ->
                 cmds.map { tacCmd ->
@@ -1718,7 +1739,7 @@ class CVLCompiler(
                 cmd.scope
             ),
             allocatedTACSymbols,
-            CompilationEnvironment()
+            compilationEnvironment
         )
 
         val combinedProg = havocedInvParams.zip(cmd.params).foldIndexed(RequireInvariantProgram(CVLTACProgram.empty("toBePlacedAfterRuleParamSetup"), CVLTACProgram.empty("assumeRequireInvParam"))) { i, acc, (havocedInvParam, exp) ->
@@ -1731,24 +1752,20 @@ class CVLCompiler(
             val assumeCmd = CVLCmd.Simple.AssumeCmd.Assume(cmd.range, eqExp, "compileAssumeInvariantGlobally", cmd.scope)
 
             // compiling the assumption that the assigned global is equal to the initially havoc'ed variable
-            val compiledAssume = compileCommand(assumeCmd, allocatedTACSymbols, CompilationEnvironment())
+            val compiledAssume = compileCommand(assumeCmd, allocatedTACSymbols, compilationEnvironment)
 
             // Compiling the evaluation of the expression of parameter
-            val evaulatedExpressionOfParam = CVLExpressionCompiler(this, allocatedTACSymbols, CompilationEnvironment())
+            val evaulatedExpressionOfParam = CVLExpressionCompiler(this, allocatedTACSymbols, compilationEnvironment)
                 .compileExp(globalRequireInvVar, exp).getAsSimple().merge(compiledAssume).getAsSimple().ignoreInCallTrace()
 
             // Adding variable assumption to the freshly havoc'ed CVL parameters. As the freshly generated havoc'ed parameter variables will be moved, the assumption on the bounds must be moved as well.
-            val havocedVariableAssumptions = addVariableValueAssumptions(havocedInvParam.id, havocedInvParam.type, "variable assumptions for havoced parameters ", allocatedTACSymbols, CompilationEnvironment()).getAsSimple()
+            val havocedVariableAssumptions = addVariableValueAssumptions(havocedInvParam.id, havocedInvParam.type, "variable assumptions for havoced parameters ", allocatedTACSymbols, compilationEnvironment).getAsSimple()
             RequireInvariantProgram(programToMove = acc.programToMove.merge(havocedVariableAssumptions), programToMaintain = acc.programToMaintain.merge(evaulatedExpressionOfParam))
         }
 
-        // Creating a labelId to be able to map start and end of the currently compiled command in [instrumentation.transformers.RequireInvariantTransformer]
-        val labelId = Allocator.getFreshId(Allocator.Id.REQUIRE_INVARIANT_CMDS)
 
         val toBePlacedAfterRuleParamSetup = combinedProg.programToMove.merge(invariantAssume)
-            .getAsSimple()
-            .prependToBlock0(CommandWithRequiredDecls(listOf(TACCmd.Simple.AnnotationCmd(CVL_ASSUME_INVARIANT_CMD_START, TACMeta.RequireInvariant(labelId, cmd.id)))))
-            .appendToSinks(CommandWithRequiredDecls(listOf(TACCmd.Simple.AnnotationCmd(CVL_ASSUME_INVARIANT_CMD_END, TACMeta.RequireInvariant(labelId, cmd.id)))))
+            .wrapAsAssumeInvariant(cmd.id)
 
         return combinedProg.programToMaintain.merge(toBePlacedAfterRuleParamSetup).toSimple()
     }
@@ -2329,15 +2346,13 @@ class CVLCompiler(
                         0 -> listOf()
                         1 -> wrapCmdWithLabels(cmd.block.single())
                         else -> {
-                            val l = cmd.block.zipWithNext { firstCmd, nextCmd ->
-                                if (firstCmd is CVLCmd.Simple.Label.Start) {
-                                    listOf(nextCmd)
+                            cmd.block.foldIndexed(emptyList()) { idx, acc, cur ->
+                                if (isAlreadyWrapped(cmd.block, idx)) {
+                                    acc + cur
                                 } else {
-                                    wrapCmdWithLabels(nextCmd)
+                                    acc + wrapCmdWithLabels(cur)
                                 }
-                            }.flatten()
-
-                            wrapCmdWithLabels(cmd.block.first()) + l
+                            }
                         }
                     }
                 ))
@@ -2412,7 +2427,16 @@ class CVLCompiler(
         }
     }
 
-    private fun wrapWithCVL(cmds: CommandWithRequiredDecls<TACCmd.Spec>, msg: String): CommandWithRequiredDecls<TACCmd. Spec> {
+    private fun isAlreadyWrapped(block: List<CVLCmd>, idx: Int): Boolean {
+        val prev = block.getOrNull(idx - 1)
+        val next = block.getOrNull(idx + 1)
+
+        return prev is CVLCmd.Simple.Label.Start
+                && next is CVLCmd.Simple.Label.End
+                && prev.id == next.id
+    }
+
+    internal fun wrapWithCVL(cmds: CommandWithRequiredDecls<TACCmd.Spec>, msg: String): CommandWithRequiredDecls<TACCmd. Spec> {
         val labelId = Allocator.getFreshId(Allocator.Id.CVL_EVENT)
         return CommandWithRequiredDecls<TACCmd.Spec>(
             TACCmd.Simple.AnnotationCmd(CVL_LABEL_START, CVLReportLabel.Message(msg)).plusMeta(CVL_LABEL_START_ID, labelId)
@@ -2468,6 +2492,8 @@ class CVLCompiler(
     fun generateRuleSetupCode(): CVLTACProgram {
         logger.info { "Rule $ruleName setup header: params and last storage initialization" }
 
+        val env = CompilationEnvironment()
+
         val startBlockEnvSetup = wrapWithCVL(multiContractSetup(), "multi contract setup")
             .merge(
                 wrapWithCVL(declareContractsAddressVars(), "contract address vars initialized")
@@ -2508,9 +2534,6 @@ class CVLCompiler(
                     wrapWithCVL(CommandWithRequiredDecls(TACCmd.Simple.NopCmd), "making no assumptions about uniqueness of contracts' addresses")
                 }
             ).merge(
-                // Add linking connections
-                wrapWithCVL(resolveLinks(), "static links")
-            ).merge(
                 wrapWithCVL(ensureZeroBalancesForClones(), "cloned contracts have no balances")
             ).merge(
                 wrapWithCVL(initializeConstantImmutables(), "Linked immutable setup")
@@ -2522,7 +2545,10 @@ class CVLCompiler(
                 it.merge(wrapWithCVL(CommandWithRequiredDecls<TACCmd.Spec>(listOf(TACCmd.Simple.AnnotationCmd(CVL_ASSUME_INVARIANT_TARGET))), "Assuming all requireInvariants commands globally"))
             }
 
-        return codeFromCommandVarWithDecls(StartBlock, wrapWithCVL(startBlockEnvSetup, "Setup"), ruleName)
+        val setupProg = codeFromCommandVarWithDecls(StartBlock, wrapWithCVL(startBlockEnvSetup, "Setup"), ruleName)
+        val linksProg = resolveLinks(env)
+
+        return setupProg merge linksProg
     }
 
     /** Generates TAC code for the requirement.
@@ -2752,8 +2778,8 @@ class CVLCompiler(
             // allow empty invariant preserves
             ruleType is SpecType.Single.InvariantCheck.GenericPreservedInductionStep -> true
 
-            // some builtin rules are allowed to have an empty function set
-            ruleType is SpecType.Single.BuiltIn && BuiltInRuleCustomChecker.fromBirType(ruleType).functionSetCanBeEmpty -> true
+            // builtin rules are allowed to have an empty function set
+            ruleType is SpecType.Single.BuiltIn -> true
 
             // if we ignore view/pure functions, we also don't care if they fail to instantiate
             Config.IgnoreViewFunctionsInParametricRules.get() -> true
@@ -2838,79 +2864,108 @@ class CVLCompiler(
         )
     }
 
-    /*
-     * Make sure that links are well-defined, by setting relevant TAC commands to connect between the relevant contracts
+    /**
+     * Make sure that links are well-defined, by setting relevant TAC commands to connect between the relevant contracts.
+     * Returns a [CVLTACProgram] containing all link assumptions.
      */
-    private fun resolveLinks(): CommandWithRequiredDecls<TACCmd.Spec> {
-        val allContractsLinksCommands = mutableListOf<CommandWithRequiredDecls<TACCmd.Spec>>()
+    private fun resolveLinks(env: CompilationEnvironment): CVLTACProgram {
+        val linkPrograms = mutableListOf<CVLTACProgram>()
         val contracts = scene.getContracts()
 
         contracts.forEach { contract ->
             val storageVars = (scene.getStorageUniverse()[contract.instanceId] as? StorageInfoWithReadTracker)?.storageVariables?.keys
                 ?: throw IllegalStateException("Expected Storage Variables object to exist in contract $contract")
 
-            val stateLinks = contract.getContractStateLinks()
-            if (stateLinks == null) {
-                logger.info { "Contract ${contract.name} does not contain state link information, assuming there are no links to resolve" }
-            } else if (stateLinks.isEmpty()) {
+            if (contract.resolvedLinks.isEmpty()) {
                 logger.info { "Nothing to link in ${contract.name}" }
-            } else {
-                val contractLinksCmdsWithStorageAnalysis =
-                    resolveLinksWithStorageAnalysis(storageVars, stateLinks)
-                if (contractLinksCmdsWithStorageAnalysis.isNotEmpty()) {
-                    // if we succeeded with storage analysis, just add the inferred link commands and move onward
-                    allContractsLinksCommands.addAll(contractLinksCmdsWithStorageAnalysis)
-                } else {
-                    // storage analysis could not help here, so we go for the basic yet potentially less precise methods
-                    val contractLinksCmdsWithoutStorageAnalysis = resolveLinksWithoutStorageAnalysis(
-                        storageVars,
-                        stateLinks,
-                        scene
-                    )
-                    allContractsLinksCommands.addAll(contractLinksCmdsWithoutStorageAnalysis)
-                }
-
-                // attempt to add struct link assumptions as well. Note legacy struct link info is not linked here
-                val structLinkCmds = storageVars.mapNotNull { storageVar ->
-                    val fieldName = storageVar.singleDisplayPathOrNull()?.let { it as? DisplayPath.FieldAccess }?.field ?: return@mapNotNull null
-                    val targetContract = stateLinks.structLinkingInfo[fieldName] ?: return@mapNotNull null
-                    val contractAddress = scene.getContract(targetContract).addressSym as TACSymbol
-                    val tmpVar = TACKeyword.TMP(Tag.Bool, "structLinkSetup")
-                    wrapWithCVL(
-                        CommandWithRequiredDecls(
-                            listOf(
-                                TACCmd.Simple.AssigningCmd.AssignExpCmd(
-                                    lhs = tmpVar,
-                                    rhs = TACExpr.BinRel.Eq(storageVar.asSym(), contractAddress.asSym())
-                                ),
-                                TACCmd.Simple.AssumeCmd(tmpVar, "struct linking")
-                            ),
-                            tmpVar
-                        ),
-                        "Struct link ${contract.name}:${fieldName}=${scene.getContract(targetContract).name}"
-                    )
-                }
-                allContractsLinksCommands.addAll(structLinkCmds)
+                return@forEach
             }
+
+            val links = contract.resolvedLinks
+
+            // Reject linking to library contracts — libraries are inlined by the compiler
+            // and don't occupy storage slots at runtime.
+            val allTargetIds = links.scalars.values.flatten() +
+                links.elementLinks.values.flatten().flatMap { it.targets } +
+                links.wildcardLinks.values.flatMap { it.targets } +
+                links.immutables.values.flatten()
+            for (targetId in allTargetIds.distinct()) {
+                val target = scene.getContract(targetId)
+                val targetSrc = (target as? IContractWithSource)?.src
+                if (targetSrc?.isLibrary == true) {
+                    throw CertoraException(
+                        CertoraErrorType.INVALID_LINKING,
+                        "Could not link in ${contract.name} to ${target.name}, which is a library." +
+                            " No need to specify explicit link for library contracts"
+                    )
+                }
+            }
+
+            val (scalarCmds, unresolvedLinks) = resolveLinksWithStorageAnalysis(storageVars, contract, links.scalars)
+            linkPrograms.add(scalarCmds.toProg("scalarLink", env))
+            if (unresolvedLinks.isNotEmpty()) {
+                // Storage analysis could not help for some slots (e.g. -enableStorageAnalysis false),
+                // fall back to the basic yet potentially less precise method.
+                val fallbackCmds = resolveLinksWithoutStorageAnalysis(storageVars, contract, unresolvedLinks)
+                linkPrograms.addAll(fallbackCmds.map { it.toProg("scalarLinkFallback", env) })
+            }
+
+            linkPrograms.add(resolveElementLinks(
+                contract, storageVars, scene,
+                linkMap = links.elementLinks,
+                env = env,
+                arrayMetadata = links.arrayMetadata
+            ))
+
+            // Resolve immutable link entries
+            linkPrograms.add(mergeMany(links.immutables.map { (varname, targetIds) ->
+                val immutableVar = TACSymbol.immutable(varname, contract.name)
+                val (disjunction, addressDecls) = buildAddressDisjunction(immutableVar.asSym(), targetIds, scene)
+                val tmpVar = TACKeyword.TMP(Tag.Bool, "immutableLinkSetup")
+                wrapWithCVL(
+                    CommandWithRequiredDecls(
+                        listOf(
+                            TACCmd.Simple.AssigningCmd.AssignExpCmd(lhs = tmpVar, rhs = disjunction),
+                            TACCmd.Simple.AssumeCmd(tmpVar, "immutable linking")
+                        ),
+                        addressDecls + immutableVar + tmpVar
+                    ),
+                    "Immutable link ${contract.name}:${varname}=${formatContractNames(scene, targetIds)}"
+                )
+            }).toProg("immutableLink", env))
         }
-        return CommandWithRequiredDecls.mergeMany(allContractsLinksCommands)
+        return linkPrograms.fold(CVLTACProgram.empty("links")) { acc, prog -> acc merge prog }
     }
 
-
-    private fun storageVarIsContractOrAddress(storageVar: TACStorageSlot) = (storageVar.storageType as? TACStorageType.IntegralType)?.descriptor.let { descr ->
-        descr is EVMTypeDescriptor.EVMContractTypeDescriptor || descr == EVMTypeDescriptor.address
+    /**
+     * Resolve a [LinkIndexValue] to a [TACSymbol] for storage key arithmetic.
+     * Since link indices are restricted to literals and contract aliases, this produces
+     * direct constants or contract address variable lookups.
+     */
+    internal fun resolveIndexSymbol(indexValue: LinkIndexValue): TACSymbol = when (indexValue) {
+        is LinkIndexValue.NumericLiteral -> TACSymbol.lift(indexValue.value)
+        is LinkIndexValue.BytesLiteral ->
+            CodeGenUtils.numAsBytesKConst(indexValue.value, indexValue.k * 8)
+        is LinkIndexValue.ContractRef -> allocatedTACSymbols.get(indexValue.alias)
     }
 
-    /*
-     * Resolve the links addresses when storage analysis succeeded. In this case, we have the data already sorted and easy to access.
-     * If the return value is an empty list, it means this stage has failed, and the no-storage-analysis will be executed.
+    /**
+     * Resolves scalar link slots using scalarized storage variables from storage analysis.
+     * Returns the linking commands and the unresolved entries (those without a matching scalarized variable).
      */
     private fun resolveLinksWithStorageAnalysis(
         storageVars: Set<TACSymbol.Var>,
-        contractWithStateLinks: ContractWithStateLinkInfo
-    ): List<CommandWithRequiredDecls<TACCmd.Spec>> {
+        contract: IContractClass,
+        stateLinks: Map<LinkAccessPath, Set<BigInteger>>
+    ): Pair<CommandWithRequiredDecls<TACCmd.Spec>, Map<LinkAccessPath, Set<BigInteger>>> {
         if (storageVars.isEmpty()) {
-            return emptyList()
+            stateLinks.keys.forEach { linkPath ->
+                Logger.regression {
+                    "Expected to have one matching storage variable for slot ${linkPath.rootSlot()}" +
+                        " in ${contract.name}: no storage variables available"
+                }
+            }
+            return CommandWithRequiredDecls<TACCmd.Spec>() to stateLinks
         }
 
         /* BG - 20221219
@@ -2927,84 +2982,61 @@ class CVLCompiler(
             }
                 || Config.FullWordLinking.get() // case 2: allowed from config
 
-        // we have storage variables
-        val contractLinksCmds =
-            // all or nothing
-            contractWithStateLinks.stateLinks.entries.monadicMap { (linkedContractSlot: BigInteger, linkedContractId: BigInteger) ->
-                val storageSortVariables = storageVars.filter {
-                    SCALARIZATION_SORT in it.meta &&
-                        it.meta[SCALARIZATION_SORT] != ScalarizationSort.UnscalarizedBuffer &&
-                        BIT_WIDTH in it.meta &&
-                        (it.meta[BIT_WIDTH] == EVM_ADDRESS_SIZE ||
-                            (allowWordWidthContractAddresses && it.meta[BIT_WIDTH] == EVM_BITWIDTH256))
+        // Filter address-width scalarized storage variables (loop-invariant)
+        val storageSortVariables = storageVars.filter { sv ->
+            val sort = sv.meta.find(SCALARIZATION_SORT)
+            sort != null && sort != ScalarizationSort.UnscalarizedBuffer &&
+                sv.meta.find(BIT_WIDTH).let { bw ->
+                    bw == EVM_ADDRESS_SIZE || (allowWordWidthContractAddresses && bw == EVM_BITWIDTH256)
                 }
+        }
 
-                fun extractBaseSlot(sSort: ScalarizationSort): BigInteger? = when (sSort) {
-                    is ScalarizationSort.Packed -> {
-                        extractBaseSlot(sSort.packedStart)
-                    }
+        val storageLayout = contract.getStorageLayout()
 
-                    is ScalarizationSort.Split -> {
-                        sSort.idx
-                    }
+        val (resolved, unresolved) = stateLinks.entries.partition { (linkPath, _) ->
+            val linkedContractSlot = linkPath.rootSlot()
+            // two address type fields cannot be packed together in the same slot, so we expect exactly one match
+            storageSortVariables.any { sv ->
+                extractBaseSlot(sv.meta[SCALARIZATION_SORT]!!) == linkedContractSlot
+            }
+        }
 
-                    ScalarizationSort.UnscalarizedBuffer -> {
-                        // We assume that this case represents the case of split mappings;
-                        // currently, we don't support links nested in maps, but only on value types storage fields.
-                        null
-                    }
-                }
+        unresolved.forEach { (linkPath, _) ->
+            Logger.regression {
+                "Expected to have one matching storage variable for slot ${linkPath.rootSlot()}" +
+                    " in ${contract.name}, candidates: $storageSortVariables"
+            }
+        }
 
-                val matchingSplitStorageVar: TACSymbol.Var =
-                    storageSortVariables.filter { sortVariable: TACSymbol.Var ->
-                        val storageSort: ScalarizationSort =
-                            sortVariable.meta.find(SCALARIZATION_SORT) ?: throw IllegalStateException(
-                                "Expected to find STORAGE_SORT key in ${sortVariable.meta}"
-                            )
-                        extractBaseSlot(storageSort) == linkedContractSlot
-                    }.let { res ->
-                        // two address type fields cannot be packed together in the same slot, so we expect the list to
-                        // have exactly one element.
-                        val singleRes = res.singleOrNull()
-                        if (singleRes == null) {
-                            logger.warn {
-                                "Expected to have one matching storage variable for slot $linkedContractSlot" +
-                                    " in ${contractWithStateLinks.contract.name}, got $res out of ${storageSortVariables.sortedWith(TACSymbol.Var.byName)}"
-                            }
-                            // will fall through to no-storage analysis case
-                            return@monadicMap null
-                        } else {
-                            singleRes
-                        }
-                    }
-                val contractAddress: TACSymbol = scene.getContract(linkedContractId).addressSym as TACSymbol
-                val tmpVar: TACSymbol.Var = TACKeyword.TMP(Tag.Bool, "linkSetup")
-                val assignCondCmd = TACCmd.Simple.AssigningCmd.AssignExpCmd(
-                    lhs = tmpVar,
-                    rhs = TACExpr.BinRel.Eq(matchingSplitStorageVar.asSym(), contractAddress.asSym())
-                )
-                val decls = mutableSetOf<TACSymbol.Var>()
-                decls.add(tmpVar)
-                decls.add(matchingSplitStorageVar)
-                if (contractAddress is TACSymbol.Var) {
-                    decls.add(contractAddress)
-                }
-                // getting the slot name for the print
-                val bestSlotName = contractWithStateLinks.contract.getStorageLayout()?.values?.filter { storageVar ->
-                    storageVar.slot == linkedContractSlot
-                }?.singleOrNull(::storageVarIsContractOrAddress)?.label ?: linkedContractSlot
-                wrapWithCVL(
-                    CommandWithRequiredDecls<TACCmd.Spec>(
-                        listOf(
-                            assignCondCmd, TACCmd.Simple.AssumeCmd(tmpVar, "linking")
-                        ),
-                        decls
+        val cmds = CommandWithRequiredDecls.mergeMany(resolved.map { (linkPath, linkedContractIds) ->
+            // linkedContractSlot is the numeric EVM storage slot index from the Solidity storage layout
+            // (i.e., the concrete slot number, not a symbolic TAC expression)
+            val linkedContractSlot = linkPath.rootSlot()
+            val matchingSplitStorageVar = storageSortVariables.single { sv ->
+                extractBaseSlot(sv.meta[SCALARIZATION_SORT]!!) == linkedContractSlot
+            }
+
+            // Use the human-readable field name from the storage layout when available for diagnostics
+            val bestSlotName = storageLayout?.values?.filter { storageVar ->
+                storageVar.slot == linkedContractSlot
+            }?.singleOrNull(::storageVarIsContractOrAddress)?.label ?: linkedContractSlot
+            val targetNames = formatContractNames(scene, linkedContractIds)
+
+            val (condExpr, addressDecls) = buildAddressDisjunction(matchingSplitStorageVar.asSym(), linkedContractIds, scene)
+            val tmpVar = TACKeyword.TMP(Tag.Bool, "linkSetup")
+            wrapWithCVL(
+                CommandWithRequiredDecls<TACCmd.Spec>(
+                    listOf(
+                        TACCmd.Simple.AssigningCmd.AssignExpCmd(lhs = tmpVar, rhs = condExpr),
+                        TACCmd.Simple.AssumeCmd(tmpVar, "linking")
                     ),
-                    "Link ${contractWithStateLinks.contract.name}:${bestSlotName}=${scene.getContract(linkedContractId).name}"
-                )
-            } ?: emptyList()
+                    addressDecls + tmpVar + matchingSplitStorageVar
+                ),
+                "Link ${contract.name}:${bestSlotName}=${targetNames}"
+            )
+        })
 
-        return contractLinksCmds
+        return cmds to unresolved.associate { (k, v) -> k to v }
     }
 
     internal fun ensureBitWidth(t: CVLType.PureCVLType, id: TACSymbol.Var): CommandWithRequiredDecls<TACCmd.Spec> =
@@ -3436,21 +3468,17 @@ class CVLCompiler(
             }.joinToString(OUTPUT_NAME_DELIMITER)
     }
 
-    /*
-     * Resolve links when storage analysis has failed, so the input list of created commands is empty.
-     * In this case we have to gently extract the link address from the storage variable, that might contain also other variables packed in.
-     */
     private fun resolveLinksWithoutStorageAnalysis(
         storageVars: Set<TACSymbol.Var>,
-        contractWithStateLinks: ContractWithStateLinkInfo,
-        scene: IScene
+        contract: IContractClass,
+        stateLinks: Map<LinkAccessPath, Set<BigInteger>>
     ): List<CommandWithRequiredDecls<TACCmd.Spec>> {
-        val contract = contractWithStateLinks.contract
+        val slotLinks = stateLinks.mapKeys { it.key.rootSlot() }
 
         // find whether there is a matching storage variable for the contract holding the linked storage
         fun findMatchingStorageVariables(): List<TACSymbol.Var> {
             return storageVars.filter {
-                val storageKey: BigInteger = it.meta.find(TACMeta.STORAGE_KEY)
+                val storageKey: BigInteger = it.meta.find(STORAGE_KEY)
                     ?: throw IllegalStateException("Expected to find STORAGE_KEY meta in ${it.meta} of contract ${contract.name} address ${contract.instanceId}")
                 // When Storage Analysis is unavailable, there should be only one storage var, that should have a matching storage key
                 storageKey == contract.instanceId
@@ -3458,17 +3486,15 @@ class CVLCompiler(
         }
 
         val contractLinksCmds =
-            contractWithStateLinks.stateLinks
-                .map { (linkedContractSlot: BigInteger, linkedContractId: BigInteger) ->
-                    val contractToLinkTo = scene.getContract(linkedContractId)
-                    val contractAddressVar: TACSymbol.Var = contractToLinkTo.addressSym as TACSymbol.Var
+            slotLinks.entries
+                .mapNotNull { (linkedContractSlot: BigInteger, linkedContractIds: Set<BigInteger>) ->
                     val storageLayout = contract.getStorageLayout()
                         ?: if (!Config.FullWordLinking.get()) {
-                            throw CertoraException(
-                                CertoraErrorType.INVALID_LINKING,
-                                "Failed to perform link in contract ${contract.name} to ${contractToLinkTo.name}. " +
-                                    "Solidity compiler version may be too old. You may try enabling ${Config.FullWordLinking.userFacingName()}. "
-                            )
+                            logger.warn {
+                                "Failed to perform link in contract ${contract.name} for slot $linkedContractSlot: " +
+                                    "no storage layout available and ${Config.FullWordLinking.userFacingName()} is not enabled."
+                            }
+                            return@mapNotNull null
                         } else {
                             // full word linking is allowed, short-circuit here
                             val matchingStorageVars = findMatchingStorageVariables()
@@ -3480,7 +3506,10 @@ class CVLCompiler(
                             val storageArray = matchingStorageVars.singleOrNull {
                                 it.meta.find(SCALARIZATION_SORT) is ScalarizationSort.UnscalarizedBuffer
                                     && it.meta.find(BIT_WIDTH) == null // filter out the splits for accessing struct values within mappings
-                            } ?: throw IllegalStateException("No storage array for contract ${contract.name}")
+                            } ?: run {
+                                logger.warn { "No storage array for contract ${contract.name}" }
+                                return@mapNotNull null
+                            }
 
                             // try to find more precise match on the slot, but otherwise fall back to storageArray
                             val matchingStorageVar = matchingStorageVars.singleOrNull {
@@ -3493,27 +3522,14 @@ class CVLCompiler(
                                 }
                             } ?: storageArray
 
-                            return@map fullWordLinking(matchingStorageVar, linkedContractSlot, contractAddressVar)
+                            return@mapNotNull fullWordLinking(matchingStorageVar, linkedContractSlot, linkedContractIds)
                         }
 
                     val matchingStorageVars = findMatchingStorageVariables()
                     val matchingStorageVar = matchingStorageVars.singleOrNull()
                         ?: run {
                             logger.warn { "Could not find in the contract ${contract.name} a single storage variable with a matching storage key ${contract.instanceId.toString(16)}, got $matchingStorageVars" }
-                            val explanationAddendum = if (
-                            // if someone declared a library contract explicitly in the scene, this is likely to be false!
-                                (contractToLinkTo as? IContractWithSource)?.src?.isLibrary == true
-                                // but all sighashes will be computed 0. This is resting on uneven ground, but reporting a better message is valuable
-                                || (contractToLinkTo as? IContractWithSource)?.src?.methods?.all { it.sighash == "0" } == true
-                            ) {
-                                ", which is a library. No need to specify explicit link for library contracts"
-                            } else {
-                                ""
-                            }
-                            throw CertoraException(
-                                CertoraErrorType.INVALID_LINKING,
-                                "Could not link in ${contract.name} to ${contractToLinkTo.name}${explanationAddendum}"
-                            )
+                            return@mapNotNull null
                         }
 
                     val storageItemsPackedInRelevantSlot = storageLayout.filter { storageVar ->
@@ -3523,17 +3539,17 @@ class CVLCompiler(
                     val highestOffset: Int =
                         storageItemsPackedInRelevantSlot.maxWithOrNull(Comparator.comparingInt { it.value.offset })?.value?.offset
                             ?: // [storageInRelevantSlot] is empty
-                            throw CertoraException(
-                                CertoraErrorType.INVALID_LINKING,
-                                "The Storage Layout for ${contract.name} does not have $linkedContractSlot as a slot. Please check the specified storage link to ${contractToLinkTo.name}"
-                            )
+                            run {
+                                logger.warn { "The Storage Layout for ${contract.name} does not have $linkedContractSlot as a slot." }
+                                return@mapNotNull null
+                            }
 
                     val cmds = mutableListOf<TACCmd.Spec>()
                     val decls = mutableSetOf<TACSymbol.Var>()
 
                     when (storageItemsPackedInRelevantSlot.size) {
                         // the address variable is the only one on this slot, so there is no need for filtering at all and we can copy it as is
-                        1 -> fullWordLinking(matchingStorageVar, linkedContractSlot, contractAddressVar).let {
+                        1 -> fullWordLinking(matchingStorageVar, linkedContractSlot, linkedContractIds).let {
                             cmds.addAll(it.cmds)
                             decls.addAll(it.varDecls)
                         }
@@ -3648,21 +3664,18 @@ class CVLCompiler(
                             val assumeCmd1 = TACCmd.Simple.AssumeCmd(tmpVarAssume1value, "linking")       // assume(tmpAssume1)
                             cmds.add(assumeCmd1)
 
-                            val assume2valueCmd =
-                                TACCmd.Simple.AssigningCmd.AssignExpCmd(                       // tmpAssume2 = link == linkedContractId
-                                    lhs = tmpVarAssume2value,
-                                    rhs = TACExpr.BinRel.Eq(link.asSym(), contractAddressVar.asSym())
-                                )
-                            cmds.add(assume2valueCmd)
-                            decls.add(tmpVarAssume2value)
-                            decls.add(contractAddressVar)
-                            decls.add(link)
-
-                            val assumeCmd2 = TACCmd.Simple.AssumeCmd(tmpVarAssume2value, "linking")       // assume(tmpAssume2)
-                            cmds.add(assumeCmd2)
+                            val (addrDisjunction, addressDecls) = buildAddressDisjunction(link.asSym(), linkedContractIds, scene)
+                            cmds.add(TACCmd.Simple.AssigningCmd.AssignExpCmd(              // tmpAssume2 = link == linkedContractIds
+                                lhs = tmpVarAssume2value,
+                                rhs = addrDisjunction
+                            ))
+                            decls.addAll(addressDecls)
+                            decls.addAll(listOf(tmpVarAssume2value, link))
+                            cmds.add(TACCmd.Simple.AssumeCmd(tmpVarAssume2value, "linking")) // assume(tmpAssume2)
                         }
                     }
 
+                    val targetNames = formatContractNames(scene, linkedContractIds)
                     wrapWithCVL(
                         CommandWithRequiredDecls<TACCmd.Spec>(
                             cmds, decls
@@ -3671,31 +3684,35 @@ class CVLCompiler(
                             storageItemsPackedInRelevantSlot.values.singleOrNull { storageVar ->
                                 (storageVar.storageType as? TACStorageType.IntegralType)?.typeLabel == "address"
                             }?.label ?: linkedContractSlot
-                        }=${contractToLinkTo.name}"
+                        }=${targetNames}"
                     )
 
                 }
 
         return contractLinksCmds
     }
-}
 
-/**
- * Performs a super simple linking by storing the linked address into the desired slot, disregarding any potential packing.
- * This should be used carefully and within [resolveLinksWithoutStorageAnalysis].
- * Should return a [CommandWithRequiredDecls<TACCmd.Spec>] with only commands and decls, no bifs/any other fields
- */
-private fun fullWordLinking(storageBaseVar: TACSymbol.Var, linkedContractSlot: BigInteger, addressToLink: TACSymbol): CommandWithRequiredDecls<TACCmd.Spec> {
-    val setLinkCmd = if (storageBaseVar.tag.isMapType()) {
-        TACCmd.Simple.WordStore(
-            base = storageBaseVar,
-            loc = linkedContractSlot.asTACSymbol(),
-            value = addressToLink
-        )
-    } else {
-        TACCmd.Simple.AssigningCmd.AssignExpCmd(storageBaseVar, addressToLink)
+    /**
+     * Performs a simple linking by storing the linked address into the desired slot, disregarding any potential packing.
+     * Should be used carefully and within [resolveLinksWithoutStorageAnalysis].
+     */
+    private fun fullWordLinking(
+        storageBaseVar: TACSymbol.Var,
+        linkedContractSlot: BigInteger,
+        linkedContractIds: Set<BigInteger>
+    ): CommandWithRequiredDecls<TACCmd.Spec> {
+        val addressToLink = linkedContractIds.map { scene.getContract(it).addressSym as TACSymbol }.single()
+        val setLinkCmd = if (storageBaseVar.tag.isMapType()) {
+            TACCmd.Simple.WordStore(
+                base = storageBaseVar,
+                loc = linkedContractSlot.asTACSymbol(),
+                value = addressToLink
+            )
+        } else {
+            TACCmd.Simple.AssigningCmd.AssignExpCmd(storageBaseVar, addressToLink)
+        }
+        return CommandWithRequiredDecls<TACCmd.Spec>(setLinkCmd)
     }
-    return CommandWithRequiredDecls<TACCmd.Spec>(setLinkCmd)
 }
 
 private fun getArrayAssumptions(id: String, arrayType: CVLType.PureCVLType.CVLArrayType, allocatedTACSymbols: TACSymbolAllocation): CommandWithRequiredDecls<TACCmd.Spec> {

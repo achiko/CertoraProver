@@ -1,0 +1,6 @@
+Spec link dispatch in Main via dynDyn/mapDyn/dynInStatic: storage linked to [TokenA, TokenB, TokenC], inlining [TokenA.getValue(), TokenB.getValue(), TokenC.getValue()]
+Spec link dispatch in Main via mapMap/mapStatic: storage linked to [TokenA, TokenB, TokenD], inlining [TokenA.getValue(), TokenB.getValue(), TokenD.getValue()]
+Spec link dispatch in Main via staticInDyn/complexMap: storage linked to [TokenA, TokenB, TokenC, TokenD], inlining [TokenA.getValue(), TokenB.getValue(), TokenC.getValue(), TokenD.getValue()]
+Spec link dispatch in Main via wcDynDyn: storage linked to [TokenA, TokenB], inlining [TokenA.getValue(), TokenB.getValue()]
+Spec link dispatch in Main via wcMapMap: storage linked to [TokenC, TokenD], inlining [TokenC.getValue(), TokenD.getValue()]
+Inlining a call to TokenC.getValue in Main-getWcComplexAt(bytes32,uint256,uint256) via serialization

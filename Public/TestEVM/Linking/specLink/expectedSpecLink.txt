@@ -1,0 +1,13 @@
+Spec link dispatch in Main via fixedMultiTokens: storage linked to [TokenA, TokenD], inlining [TokenA.getValue(), TokenD.getValue()]
+Spec link dispatch in Main via fixedTokens: storage linked to [TokenA, TokenB, TokenC], inlining [TokenA.getValue(), TokenB.getValue(), TokenC.getValue()]
+Spec link dispatch in Main via multiTokens: storage linked to [TokenB, TokenC], inlining [TokenB.getValue(), TokenC.getValue()]
+Spec link dispatch in Main via structItems/immutableTokenMulti: storage linked to [TokenA, TokenC], inlining [TokenA.getValue(), TokenC.getValue()]
+Spec link dispatch in Main via tokenMulti/tokenMap: storage linked to [TokenB, TokenD], inlining [TokenB.getValue(), TokenD.getValue()]
+Spec link dispatch in Main via tokens/tokenMap/bytes4Map/wcDynTokens/wcFixedTokens/wcTokenMap/wcStructItems/wcStructMap/wcTwoAddrMap/wcTwoAddrArr: storage linked to [TokenA, TokenB], inlining [TokenA.getValue(), TokenB.getValue()]
+Spec link dispatch in Main via addrMap/wcTwoAddrMap/wcTwoAddrArr: storage linked to [TokenC, TokenD], inlining [TokenC.getValue(), TokenD.getValue()]
+Spec link dispatch in Main: storage linked to [TokenA, TokenB, TokenD], inlining [TokenA.getValue(), TokenB.getValue(), TokenD.getValue()]
+Inlining a call to TokenC.getValue in Main-getStructMapTokenAt(uint256) via serialization
+Inlining a call to TokenB.getValue in Main-getImmutableTokenValue() via serialization
+Inlining a call to TokenA.getValue in Main-getTokenValue() via serialization
+Inlining a call to TokenB.getValue in Main-getHolderValue() via serialization
+Inlining a call to TokenD.getValue in Main-getWrapperValue() via serialization

@@ -258,7 +258,7 @@ terminal String
     ON_TRANSACTION_BOUNDARY, WEAK, STRONG, LOCATION, OPCODE;
 
 terminal
-    HOOK, SLOAD, SSTORE, CREATE, TLOAD, TSTORE, METHODS, HAVOC, ASSUMING,
+    HOOK, SLOAD, SSTORE, CREATE, TLOAD, TSTORE, METHODS, HAVOC, ASSUMING, LINKS,
     PLUS, MINUS, TIMES, DIV, MOD, EXPONENT, LOR, LAND, IMPLIES, IFF, NOT,
     BWOR, BWXOR, BWAND, BWLSHIFT, BWRSHIFT, BWRSHIFTWZEROS, BWNOT,
     IN, AT, RETURNS, EXPECT, SATISFY, REQUIRE, REQUIREINVARIANT, ASSERT, INVARIANT, PRESERVED, REVERT,
@@ -266,7 +266,7 @@ terminal
     LSQB, RSQB, DOT, COMMA, COLON, QUESTION, FORALL, EXISTS, USING, AS, RETURN, IMPORT, USE, BUILTIN, OVERRIDE, SIG,
     SUM, USUM, AMPERSAT, OLD, NEW, NOREVERT, WITHREVERT, FALLBACK, WITH, VOID, RULE, FUNCTION, UNRESOLVED_LOWERCASE,
     ALWAYS, CONSTANT, PER_CALLEE_CONSTANT, NONDET, HAVOC_ECF, HAVOC_ALL, AUTO, UNRESOLVED, ALL, DISPATCHER,
-    DISPATCH, DEFAULT, DELETE, ASSERT_FALSE;
+    DISPATCH, DEFAULT, DELETE, ASSERT_FALSE, EVENT, INDEXED;
 
 /* for error reporting */
 terminal STORAGE;
@@ -292,6 +292,11 @@ non terminal ImportedContract contract_using;
 /* imported methods */
 
 non terminal MethodsBlock methods_block;
+non terminal LinkBlock link_block;
+non terminal List<LinkEntry> link_entries;
+non terminal LinkEntry link_entry;
+non terminal Exp link_path;
+non terminal List<String> link_target_list;
 non terminal /* Nullable */ CallSummary summary_opt;
 non terminal CallSummary summary;
 non terminal HavocingCallSummary havoc_summary;
@@ -329,7 +334,11 @@ non terminal VMParam vm_param;
 non terminal VMParam unnamed_vm_param;
 non terminal VMParam unnamed_vm_param_no_loc, unnamed_vm_param_with_loc;
 non terminal NamedVMParam named_vm_param_no_loc, named_vm_param_with_loc;
+non terminal EventVMParam event_param;
+non terminal List<EventVMParam> event_param_list;
 non terminal CVLParam cvl_param;
+non terminal String event_param_name;
+non terminal kotlin.Pair<String, String> event_id;
 
 
 /* invariants */
@@ -467,6 +476,36 @@ contract_using ::=
 
 methods_block ::= METHODS:m LB method_dec_list:l RB:rb {: RESULT = new MethodsBlock(l, range(mxleft, rbxright)); :};
 
+link_block ::= LINKS:l LB link_entries:e RB:rb
+    {: RESULT = new LinkBlock(range(lxleft, rbxright), e); :}
+;
+
+link_entries ::=
+    /* empty */                      {: RESULT = new ArrayList<LinkEntry>(); :}
+  | link_entries:le link_entry:e     {: le.add(e); RESULT = le; :}
+;
+
+link_entry ::=
+    link_path:lp IMPLIES ID:target SC:sc
+        {: List<String> targets = new ArrayList<>(); targets.add(target);
+           RESULT = new LinkEntry(range(lpxleft, scxright), lp, targets); :}
+  | link_path:lp IMPLIES LSQB link_target_list:targets RSQB SC:sc
+        {: RESULT = new LinkEntry(range(lpxleft, scxright), lp, targets); :}
+;
+
+link_path ::=
+    ID:i
+        {: RESULT = new VariableExp(i, range(ixleft, ixright)); :}
+  | link_path:lp DOT ID:field
+        {: RESULT = new FieldSelectExp(lp, field, range(lpxleft, fieldxright)); :}
+  | link_path:lp LSQB exp:e RSQB:rb
+        {: RESULT = new ArrayDerefExp(lp, e, range(lpxleft, rbxright)); :}
+;
+
+link_target_list ::=
+    ID:i                             {: List<String> l = new ArrayList<>(); l.add(i); RESULT = l; :}
+  | link_target_list:l COMMA ID:i    {: l.add(i); RESULT = l; :}
+;
 flag_list ::=
     ID:oid ASSIGN boolLit:ob {: Map<String, Boolean> ret = new LinkedHashMap<>(); ret.put(oid, ob); RESULT = ret; :}
   | flag_list:fl COMMA ID:oid ASSIGN boolLit:ob {:
@@ -731,13 +770,13 @@ unnamed_vm_param ::=
 ;
 
 
-unnamed_vm_param_no_loc   ::= type:t                 {: RESULT = new UnnamedVMParam(t, /* location */ null,    range(txleft, txright)); :};
+unnamed_vm_param_no_loc   ::= type:t                            {: RESULT = new UnnamedVMParam(t, /* location */ null,    range(txleft, txright)); :};
 
-named_vm_param_no_loc     ::= type:t ID:i            {: RESULT = new   NamedVMParam(t, /* location */ null, i, range(txleft, ixright)); :};
+named_vm_param_no_loc     ::= type:t id_or_keyword:i            {: RESULT = new   NamedVMParam(t, /* location */ null, i, range(txleft, ixright)); :};
 
-unnamed_vm_param_with_loc ::= type:t LOCATION:l      {: RESULT = new UnnamedVMParam(t, l,                      range(txleft, lxright)); :};
+unnamed_vm_param_with_loc ::= type:t LOCATION:l                 {: RESULT = new UnnamedVMParam(t, l,                      range(txleft, lxright)); :};
 
-named_vm_param_with_loc   ::= type:t LOCATION:l ID:i {: RESULT = new   NamedVMParam(t, l, i,                   range(txleft, ixright)); :};
+named_vm_param_with_loc   ::= type:t LOCATION:l id_or_keyword:i {: RESULT = new   NamedVMParam(t, l, i,                   range(txleft, ixright)); :};
 
 cvl_param ::= type:t ID:i                            {: RESULT = new   CVLParam(t, i, range(txleft, ixright)); :};
 
@@ -808,6 +847,7 @@ ast_base_blocks ::=
   | ast_base_blocks:b use_decl:u      {: b.add(u); RESULT = b; :}
   | ast_base_blocks:b override_decl:o {: b.add(o); RESULT = b; :}
   | ast_base_blocks:b methods_block:m {: b.getMethodsBlocks ().add(m); RESULT = b; :}
+  | ast_base_blocks:b link_block:l    {: b.getLinkBlocks    ().add(l); RESULT = b; :}
   | ast_base_blocks:b error SC        {: RESULT = b; :}
 ;
 
@@ -968,9 +1008,30 @@ hook_pattern ::=
 
   | HOOK:h OPCODE:o opt_named_vm_param_list:opl
       {: RESULT = new HookPattern(range(hxleft, oplxright), o, opl);                 :}
+  | HOOK:h EVENT event_id:eName LP event_param_list:ep RP:rp
+      {: RESULT = new HookPattern(range(hxleft, rpxright), new EventHookData(
+         eName.getSecond(), eName.getFirst(), ep
+      )); :}
 ;
 
+event_id ::=
+   id_or_keyword:ename {: RESULT = new kotlin.Pair<String, String>(null, ename); :}
+  | id_or_keyword:contractName DOT id_or_keyword:ename {: RESULT = new kotlin.Pair<String, String>(contractName, ename); :};
 
+event_param ::=
+  type:t INDEXED:i {: RESULT = new EventVMParam(new UnnamedVMParam(t, null, range(txleft, txright)), true, range(txleft, ixright)); :}
+  | type:t INDEXED event_param_name:id {: RESULT = new EventVMParam(new NamedVMParam(t, null, id, range(txleft, idxright)), true, range(txleft, idxright)); :}
+  | type:t event_param_name:id {: RESULT = new EventVMParam(new NamedVMParam(t, null, id, range(txleft, idxright)), false, range(txleft, idxright)); :}
+  | type:t {: RESULT = new EventVMParam(new UnnamedVMParam(t, null, range(txleft, txright)), false, range(txleft, txright)); :};
+
+event_param_list ::=
+  event_param:ep COMMA event_param_list:l {: List<EventVMParam> toRet = new ArrayList<EventVMParam>(); toRet.add(ep); toRet.addAll(l); RESULT = toRet; :}
+  | event_param:ep {: RESULT = singletonList(ep); :}
+  | {: RESULT = emptyList(); :};
+
+event_param_name ::=
+  usable_keywords:u {: RESULT = u; :}
+  | ID:i {: RESULT = i; :};
 /**
    (slot 2) -> 3rd storage slot
    (slot 0, offset 8) -> 1st storage slot, variable packed at 8 bytes
@@ -1246,8 +1307,7 @@ usable_keywords ::=
   | ON_TRANSACTION_BOUNDARY:k   {: RESULT = (String) k; :}
   | OLD:k         {: RESULT = (String) k; :}
   | HOOK:k        {: RESULT = (String) k; :}
-  | UNRESOLVED_LOWERCASE:k {: RESULT = (String) k; :}
-;
+  | UNRESOLVED_LOWERCASE:k {: RESULT = (String) k; :};
 
 id_or_keyword ::=
     ID:id              {: RESULT = id; :}

@@ -577,6 +577,9 @@ fun <T, @Treapable E> TreapSet<T>.mapNotNullToTreapSet(m : (T) -> E?) =
         }
     }
 
+fun <T : Any> sequenceOfNotNull(element: T?): Sequence<T> = element?.let { sequenceOf(it) }.orEmpty()
+fun <T : Any> sequenceOfNotNull(vararg elements: T?): Sequence<T> = elements.asSequence().filterNotNull()
+
 /** Like [mapToTreapSet], except optimized for the case where the source set is the same type as the result */
 fun <@Treapable T : Any> TreapSet<T>.updateElements(transform: (T) -> T?): TreapSet<T> {
     var added = treapSetOf<T>()
@@ -842,6 +845,8 @@ infix fun BigInteger.divRoundUp(other: BigInteger) =
     } else {
         this / other + BigInteger.ONE
     }
+
+fun BigInteger.log2Exact() = runIf(signum() > 0 && bitCount() == 1) { getLowestSetBit() }
 
 fun <T> Optional<T>.toNullable(): T? = orElse(null)
 
@@ -1328,3 +1333,5 @@ public inline fun <R> coRunCatching(block: () -> R): Result<R> {
         Result.failure(e)
     }
 }
+
+fun <T> Result<T>.isSuccessAnd(f: (T) -> Boolean) = this.getOrNull()?.let(f) == true

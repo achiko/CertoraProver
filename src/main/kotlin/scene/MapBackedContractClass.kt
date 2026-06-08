@@ -45,13 +45,14 @@ abstract class MapBackedContractClass(
     final override val name: String,
     private val storageLayout: TACStorageLayout?,
     private val transientStorageLayout: TACStorageLayout?
-) : IContractClass, Serializable, IMutableStorageInfo, IMutableTransientStorageInfo {
+) : IContractClass, Serializable, IMutableStorageInfo, IMutableTransientStorageInfo, IContractLinkInfo {
     abstract override val methods: Map<BigInteger?, ITACMethod>
     abstract override val wholeContractMethod : ITACMethod?
     abstract override val constructorMethod : ITACMethod
 
     protected abstract var storageInfoField : IStorageInfo
     protected abstract var transientStorageInfoField : IStorageInfo
+    protected open var resolvedLinksField: ResolvedLinks = ResolvedLinks.EMPTY
     override val addressSym: TACSymbol.Var = createAddressVar(instanceId, name)
 
     override val storage: IStorageInfo
@@ -59,6 +60,13 @@ abstract class MapBackedContractClass(
 
     override val transientStorage: IStorageInfo
         get() = transientStorageInfoField
+
+    override val resolvedLinks: ResolvedLinks
+        get() = resolvedLinksField
+
+    override fun setResolvedLinks(links: ResolvedLinks) {
+        resolvedLinksField = links
+    }
 
     override fun getMethods(): List<ITACMethod> = methods.values + listOfNotNull(wholeContractMethod)
 

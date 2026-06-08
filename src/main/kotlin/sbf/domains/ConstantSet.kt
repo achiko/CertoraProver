@@ -33,21 +33,20 @@ data class ConstantSet private constructor(
 
     companion object {
         private fun normalize(xs: Set<Constant>, maxNumDisjuncts: ULong): ConstantSet {
-            return if (xs.any { it.isTop() }) {
-                mkTop(maxNumDisjuncts)
-            } else{
-                val ys = xs.filter { !it.isBottom() }
-                if (ys.isEmpty()) {
-                    mkBottom(maxNumDisjuncts)
-                } else {
-                    val res = ConstantSet(ys.toSet(), maxNumDisjuncts)
-                    if (res.values.size.toULong() > maxNumDisjuncts) {
-                        res.smash()
-                    } else {
-                        res
+            val ys = mutableSetOf<Constant>()
+            for (x in xs) {
+                if (x.isTop()) {
+                    return mkTop(maxNumDisjuncts)
+                }
+                if (!x.isBottom()) {
+                    ys.add(x)
+                    // smash() returns top whenever size > maxNumDisjuncts (which implies size >= 2)
+                    if (ys.size.toULong() > maxNumDisjuncts) {
+                        return mkTop(maxNumDisjuncts)
                     }
                 }
             }
+            return if (ys.isEmpty()) { mkBottom(maxNumDisjuncts) } else { ConstantSet(ys, maxNumDisjuncts) }
         }
 
         operator fun invoke(values: Set<Constant>, maxNumDisjuncts: ULong) = normalize(values, maxNumDisjuncts)
@@ -258,7 +257,7 @@ data class ConstantSet private constructor(
                     o1.assume(op, o2)
                 }
             }
-            return if (res.all { it.isFalse() }) {
+            if (res.all { it.isFalse() }) {
                 TriBoolean(false)
             } else if (res.all { it.isTrue() }) {
                 TriBoolean(true)
@@ -270,23 +269,37 @@ data class ConstantSet private constructor(
 
     override fun filter(op: CondOp, other: ConstantSet): ConstantSet {
         return if (isBottom() || other.isBottom()) {
-            this
-        } else if (isTop() || other.isTop()){
-            if(op == CondOp.EQ) {
-                this.meet(other)
-            } else {
-                this
-            }
+            mkBottom(maxNumDisjuncts)
         } else {
-            this.values.filter { o1 ->
-                other.values.any { o2 ->
-                    !o1.assume(op, o2).isFalse()
+            val n = other.toLongOrNull()
+            when {
+                op == CondOp.EQ ->
+                    this.meet(other)
+                n != null && n in 0..maxNumDisjuncts.toLong() && op == CondOp.LE ->
+                    this.meet(ConstantSet((0..n).map { Constant(it) }.toSet(), maxNumDisjuncts))
+                n != null && n in 0..maxNumDisjuncts.toLong() && op == CondOp.LT -> {
+                    if (n == 0L) {
+                        mkBottom(maxNumDisjuncts)
+                    } else {
+                        this.meet(ConstantSet((0..<n).map { Constant(it) }.toSet(), maxNumDisjuncts))
+                    }
                 }
-            }.toSet().let {
-                if (it.isEmpty()) {
-                    mkBottom(maxNumDisjuncts)
-                } else {
-                    ConstantSet(it, maxNumDisjuncts)
+                else -> {
+                    if (isTop() || other.isTop()) {
+                        this
+                    } else {
+                        this.values.filter { o1 ->
+                            other.values.any { o2 ->
+                                !o1.assume(op, o2).isFalse()
+                            }
+                        }.toSet().let {
+                            if (it.isEmpty()) {
+                                mkBottom(maxNumDisjuncts)
+                            } else {
+                                ConstantSet(it, maxNumDisjuncts)
+                            }
+                        }
+                    }
                 }
             }
         }

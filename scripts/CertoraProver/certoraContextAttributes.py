@@ -29,7 +29,7 @@ from CertoraProver.certoraCollectConfigurationLayout import AttributeJobConfigDa
 
 attributes_logger = logging.getLogger("attributes")
 
-FORBIDDEN_PROVER_ARGS = ['-solanaInlining', '-solanaSummaries']
+FORBIDDEN_PROVER_ARGS = ['-solanaInlining', '-solanaSummaries', '-solanaAssertOnPanic']
 
 
 def validate_prover_args(value: str) -> str:
@@ -339,6 +339,51 @@ class EvmAttributes(AttrUtil.Attributes):
         disables_build_cache=False,
         config_data=AttributeJobConfigData(
             main_section=MainSection.SOLIDITY_COMPILER
+        )
+    )
+
+    RESOLVE_VYPER_IMPORTS = AttrUtil.AttributeDefinition(
+        arg_type=AttrUtil.AttrArgType.BOOLEAN,
+        help_msg="Whether to resolve Vyper imports (Vyper >= 4 only)",
+        default_desc="Vyper contracts are assumed not to use the import system",
+        argparse_args={
+            "action": AttrUtil.STORE_TRUE
+        },
+        affects_build_cache_key=True,
+        disables_build_cache=False,
+        config_data=AttributeJobConfigData(
+            main_section=MainSection.SOLIDITY_COMPILER
+        )
+    )
+
+    VYPER_IMPORT_PATH = AttrUtil.AttributeDefinition(
+        attr_validation_func=Vf.validate_dir,
+        arg_type=AttrUtil.AttrArgType.LIST,
+        help_msg="Additional paths to search for Vyper imports (Vyper >= 4 only)",
+        default_desc="Only the Python system path will be searched",
+        argparse_args={
+            'nargs': AttrUtil.MULTIPLE_OCCURRENCES,
+            'action': AttrUtil.APPEND
+        },
+        affects_build_cache_key=True,
+        disables_build_cache=False,
+        config_data=AttributeJobConfigData(
+            main_section=MainSection.NEW_SECTION
+        )
+    )
+
+    VYPER_SYSTEM_PATH = AttrUtil.AttributeDefinition(
+        arg_type=AttrUtil.AttrArgType.LIST,
+        help_msg="The system path to pass to Vyper (Vyper >= 4 only); typically automatically populated",
+        default_desc="Use the current Python system path",
+        argparse_args={
+            'nargs': AttrUtil.MULTIPLE_OCCURRENCES,
+            'action': AttrUtil.APPEND
+        },
+        affects_build_cache_key=True,
+        disables_build_cache=False,
+        config_data=AttributeJobConfigData(
+            main_section=MainSection.NEW_SECTION
         )
     )
 
@@ -1797,6 +1842,28 @@ class RustAttributes(AttrUtil.Attributes):
         disables_build_cache=False
     )
 
+    CARGO_BUILD_VERBOSE = AttrUtil.AttributeDefinition(
+        arg_type=AttrUtil.AttrArgType.BOOLEAN,
+        help_msg="Show stderr output from the Rust build process",
+        default_desc="Stderr from the build process is suppressed on success",
+        argparse_args={
+            'action': AttrUtil.STORE_TRUE
+        },
+        affects_build_cache_key=False,
+        disables_build_cache=False
+    )
+
+    SOLANA_SBF_ARCH = AttrUtil.AttributeDefinition(
+        attr_validation_func=Vf.validate_solana_sbf_arch,
+        help_msg="Target architecture for certora-sbf. Legal values: sbf, v0, v1, v2, v3",
+        default_desc="Default architecture chosen by certora-sbf",
+        argparse_args={
+            'action': AttrUtil.UniqueStore
+        },
+        affects_build_cache_key=True,
+        disables_build_cache=False
+    )
+
 
 class EvmRuleAttribute(AttrUtil.Attributes):
     RULE = AttrUtil.AttributeDefinition(
@@ -1847,8 +1914,8 @@ class ConcordAttributes(EvmProverAttributes):
 
     @classmethod
     def unsupported_attributes(cls) -> List[AttrUtil.AttributeDefinition]:
-        return [cls.VERIFY, cls.MSG, cls.PROTOCOL_NAME, cls.PROTOCOL_AUTHOR, cls.RULE, cls.EXCLUDE_RULE,
-                cls.SPLIT_RULES, cls.EXCLUDE_METHOD, cls.PARAMETRIC_CONTRACTS, cls.COVERAGE_INFO, cls.FOUNDRY,
+        return [cls.VERIFY, cls.PROTOCOL_NAME, cls.PROTOCOL_AUTHOR, cls.EXCLUDE_RULE,
+                cls.EXCLUDE_METHOD, cls.PARAMETRIC_CONTRACTS, cls.COVERAGE_INFO, cls.FOUNDRY,
                 cls.INDEPENDENT_SATISFY, cls.MULTI_ASSERT_CHECK, cls.MULTI_EXAMPLE, cls.PROJECT_SANITY,
                 cls.RULE_SANITY, cls.ADDRESS, cls.CONTRACT_EXTENSIONS, cls.CONTRACT_RECURSION_LIMIT, cls.LINK,
                 cls.OPTIMISTIC_CONTRACT_RECURSION, cls.STRUCT_LINK, cls.DYNAMIC_BOUND, cls.DYNAMIC_DISPATCH,
@@ -2005,6 +2072,17 @@ class SolanaProverAttributes(CommonAttributes, InternalUseAttributes, BackendAtt
         )
     )
 
+    ASSERT_ON_PANIC = AttrUtil.AttributeDefinition(
+        arg_type=AttrUtil.AttrArgType.BOOLEAN,
+        help_msg="Treat calls to Rust panic functions as assertion violations",
+        default_desc="Rust panic functions are not treated as assertion violations",
+        argparse_args={
+            'action': AttrUtil.STORE_TRUE
+        },
+        affects_build_cache_key=False,
+        disables_build_cache=False
+    )
+
     SOLANA_INLINING = AttrUtil.AttributeDefinition(
         attr_validation_func=Vf.validate_readable_file,
         arg_type=AttrUtil.AttrArgType.LIST,
@@ -2029,10 +2107,30 @@ class SolanaProverAttributes(CommonAttributes, InternalUseAttributes, BackendAtt
         disables_build_cache=False
     )
 
+    SPLIT_RULES = AttrUtil.AttributeDefinition(
+        arg_type=AttrUtil.AttrArgType.LIST,
+        attr_validation_func=Vf.validate_evm_rule_name,
+        help_msg="List of rules to be sent to Prover each on a separate run",
+        default_desc="Verifies all rules in a single run",
+        argparse_args={
+            'nargs': AttrUtil.MULTIPLE_OCCURRENCES,
+            'action': AttrUtil.APPEND
+        },
+        affects_build_cache_key=False,
+        disables_build_cache=False
+    )
+
+    GROUP_ID = AttrUtil.AttributeDefinition(
+        attr_validation_func=Vf.validate_uuid,
+        affects_build_cache_key=False,
+        disables_build_cache=False
+    )
+
 
 ATTRIBUTES_CLASS: Optional[Type[AttrUtil.Attributes]] = None
 
 ARG_FLAG_LIST_ATTRIBUTES = ['prover_args', 'java_args']
+DUPLICATES_ALLOWED_LIST_ATTRIBUTES = [*ARG_FLAG_LIST_ATTRIBUTES, 'vyper_system_path']
 
 
 def get_attribute_class() -> Type[AttrUtil.Attributes]:

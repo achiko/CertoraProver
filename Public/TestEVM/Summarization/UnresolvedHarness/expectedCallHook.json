@@ -1,0 +1,13 @@
+{
+	"rules": {
+		"singleRedirectedCall": "SUCCESS",
+		"twoRedirectedCalls": "SUCCESS",
+		"envfreeFuncsStaticCheck": {
+			"SUCCESS": [
+				"CertoraUnresolvedHarness.originalCallee()",
+				"lastResult()",
+				"target()"
+			]
+		}
+	}
+}

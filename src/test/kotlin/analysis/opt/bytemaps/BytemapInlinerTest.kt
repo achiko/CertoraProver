@@ -325,5 +325,18 @@ class BytemapInlinerTest : TACBuilderAuxiliaries() {
         prog.checkRhs("query") { select(bMap1.asSym(), aS)}
     }
 
+    @Test
+    fun unnecessaryBwAnd() {
+        val prog = TACProgramBuilder {
+            assumeExp(Le(aS, 0xffffffff.asTACExpr))
+            i assign IntMul(0x4000.asTACExpr, aS)
+            b assign safeMathNarrow(iS, Tag.Bit256)
+            label("query")
+            c assign BWAnd(bS, 0x3fffffffc000.asTACExpr)
+            assert(False)
+        }
+        prog.checkRhs("query") { bS }
+    }
+
 
 }

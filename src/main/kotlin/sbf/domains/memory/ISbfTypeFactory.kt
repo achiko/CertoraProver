@@ -33,6 +33,8 @@ interface ISbfTypeFactory<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>> {
     fun toHeapPtr(offset: Long): SbfType.PointerType.Heap<TNum, TOffset>
     fun toInputPtr(offset: Long): SbfType.PointerType.Input<TNum, TOffset>
     fun toGlobalPtr(offset: Long, gv: SbfGlobalVariable?): SbfType.PointerType.Global<TNum, TOffset>
+    // offsets cannot be empty
+    fun toGlobalPtr(offsets: List<Long>, gv: SbfGlobalVariable?): SbfType.PointerType.Global<TNum, TOffset>
 
     fun anyNum(): SbfType.NumType<TNum, TOffset>
     fun anyStackPtr(): SbfType.PointerType.Stack<TNum, TOffset>

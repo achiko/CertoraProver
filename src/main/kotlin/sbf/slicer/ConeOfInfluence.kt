@@ -71,7 +71,7 @@ fun sliceAndPTAOptLoop(
 
         // Run PTA optimizations that must be run after program has been inlined and sliced
         optProg = timeIt("optimizations to help the memory analysis") {
-            runPTAOptimizations(optProg, memSummaries)
+            runPTAOptimizations(optProg, memSummaries, i)
         }
 
         val newStats = optProg.getCallGraphRootSingleOrFail().getStats()
@@ -85,7 +85,7 @@ fun sliceAndPTAOptLoop(
         i++
     }
 
-    return runPostSlicingOptimizations(optProg)
+    return runPostSlicingOptimizations(optProg, memSummaries)
 }
 
 
@@ -243,7 +243,7 @@ private object SemanticConeOfInfluence{
             // We use now the forward analysis to detect unreachability.
             // By asking the type of r10 we can tell if locInst becomes unreachable or not
             for (locInst in bb.getLocatedInstructions()) {
-               if (np.registerTypes.typeAtInstruction(locInst, SbfRegister.R10_STACK_POINTER).isBottom()) {
+               if (np.registerTypes.typeAtInstruction(locInst, SbfRegister.R10).isBottom()) {
                     bb.add(locInst.pos,  mkUnreachable("OUT-SCOI (using forward)"))
                     continue@outerloop
                 }

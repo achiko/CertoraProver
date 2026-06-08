@@ -89,6 +89,24 @@ class UnoptimizeHashResultsTest {
     }
 
     @Test
+    fun testArrayNoOffsetNoMem0() {
+        val tac = mergeMany(
+//            assignHavoc(i),
+            assign(x) { applyKeccak(0x1234.toBigInteger()).asTACExpr },
+            assign(loc) { x add i },
+            CommandWithRequiredDecls(
+                TACCmd.Simple.AssigningCmd.WordLoad(
+                    lhs = t,
+                    loc = loc,
+                    base = TACKeyword.STORAGE.toVar(),
+                )
+            )
+        ).merge(t, TACKeyword.STORAGE.toVar())
+
+        runTest(tac, mapOf(i to 42.toBigInteger()), knownSlots = setOf(0x1234.toBigInteger()))
+    }
+
+    @Test
     fun testArrayConstOffset() {
         val permutations = listOf<TACExpr>(x.asSym(), i.asSym(), 0x1.asTACExpr).permutations()
 
@@ -111,13 +129,39 @@ class UnoptimizeHashResultsTest {
         }
     }
 
-    private fun runTest(tac: CommandWithRequiredDecls<TACCmd.Simple>, initial: Map<TACSymbol.Var, BigInteger>) {
+    @Test
+    fun testArrayConstOffsetNoMem0() {
+        val permutations = listOf<TACExpr>(x.asSym(), i.asSym(), 0x1.asTACExpr).permutations()
+
+        for ((a, b, c) in permutations) {
+            val tac = mergeMany(
+//                assignHavoc(i),
+                assign(x) { applyKeccak(0x1234.toBigInteger()).asTACExpr },
+                assign(loc) { a add b add c },
+                CommandWithRequiredDecls(
+                    TACCmd.Simple.AssigningCmd.WordLoad(
+                        lhs = t,
+                        loc = loc,
+                        base = TACKeyword.STORAGE.toVar(),
+                    )
+                )
+            ).merge(t, TACKeyword.STORAGE.toVar())
+
+            runTest(tac, mapOf(i to 42.toBigInteger()), knownSlots = setOf(0x1234.toBigInteger()))
+        }
+    }
+
+    private fun runTest(
+        tac: CommandWithRequiredDecls<TACCmd.Simple>,
+        initial: Map<TACSymbol.Var, BigInteger>,
+        knownSlots: Set<BigInteger> = emptySet()
+    ) {
         val test = empty.patching {
             it.addBefore(CmdPointer(entry, 0), tac.cmds)
             it.addVarDecls(tac.varDecls)
         }
 
-        val done = UnoptimizeHashResults(test).doWork()
+        val done = UnoptimizeHashResults(test, knownSlots).doWork()
 
         // Make sure we've actually inserted a hash command
         val match = done.ltacStream().filter {

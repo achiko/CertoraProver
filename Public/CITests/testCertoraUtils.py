@@ -566,6 +566,11 @@ TEST_VALUES: Dict[Callable, Dict[str, Any]] = {
         ]
     },
 
+    Vf.validate_solana_sbf_arch: {
+        'valid': ['sbf', 'v0', 'v1', 'v2', 'v3'],
+        'invalid': ['arm64', 'x86', '']
+    },
+
     Vf.validate_solana_extension: {
         'valid': [
             "file_not_exist.so"

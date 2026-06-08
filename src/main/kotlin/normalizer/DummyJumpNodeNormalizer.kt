@@ -19,6 +19,7 @@ package normalizer
 
 import analysis.TACBlock
 import analysis.dataflow.LiveVariableAnalysis
+import utils.*
 import vc.data.CoreTACProgram
 import vc.data.TACCmd
 
@@ -39,11 +40,14 @@ object DummyJumpNodeNormalizer {
         }
 
         val (c1, c2) = b.commands
+
         // first command should be const assignment
-        if (c1.cmd !is TACCmd.Simple.AssigningCmd.AssignExpCmd || c1.cmd.rhs.getAsConst() == null) {
+        if (c1.cmd !is TACCmd.Simple.AssigningCmd.AssignExpCmd) {
             return false
         }
-        val constPc = c1.cmd.rhs.getAsConst()!!.intValueExact()
+
+        val constPc = c1.cmd.rhs.getAsConst()?.toIntOrNull() ?: return false
+
         if (c2.cmd !is TACCmd.Simple.JumpCmd || c2.cmd.dst.origStartPc != constPc) {
             return false
         }

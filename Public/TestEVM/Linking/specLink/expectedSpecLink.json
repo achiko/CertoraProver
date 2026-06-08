@@ -1,0 +1,31 @@
+{
+    "rules": {
+        "tokenLinked": "SUCCESS",
+        "multiLink": "SUCCESS",
+        "dynamicArrayLinked": "SUCCESS",
+        "staticArrayLinked": "SUCCESS",
+        "structLinked": "SUCCESS",
+        "nestedStructLinked": "SUCCESS",
+        "structArrayLinked": "SUCCESS",
+        "structInArrayLinked": "SUCCESS",
+        "multiTargetDynArray": "SUCCESS",
+        "multiTargetStaticArray": "SUCCESS",
+        "mappingLinked": "SUCCESS",
+        "mappingStructLinked": "SUCCESS",
+        "bytes4MappingLinked": "SUCCESS",
+        "addrMappingLinked": "SUCCESS",
+        "immutableLinked": "SUCCESS",
+        "immutableMultiLink": "SUCCESS",
+        "wildcardDynArray": "SUCCESS",
+        "wildcardStaticArray": "SUCCESS",
+        "wildcardMapping": "SUCCESS",
+        "wildcardPrecedence": "SUCCESS",
+        "wildcardStructField": "SUCCESS",
+        "wildcardMappingStruct": "SUCCESS",
+        "wildcardMappingStructPrecedence": "SUCCESS",
+        "wildcardMappingPrecisionA": "SUCCESS",
+        "wildcardMappingPrecisionB": "SUCCESS",
+        "wildcardArrayPrecisionA": "SUCCESS",
+        "wildcardArrayPrecisionB": "SUCCESS"
+    }
+}

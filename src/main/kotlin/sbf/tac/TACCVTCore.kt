@@ -27,9 +27,59 @@ import sbf.domains.*
 import vc.data.TACCmd
 import vc.data.TACExpr
 
+
+context(SbfCFGToTAC<TNum, TOffset, TFlags>)
+internal fun<TNum : INumValue<TNum>, TOffset : IOffset<TOffset>, TFlags: IPTANodeFlags<TFlags>> summarizeCVTCore(
+    coreFn: CVTCore, locInst: LocatedSbfInstruction
+): List<TACCmd.Simple> {
+    val inst = locInst.inst
+    check(inst is SbfInstruction.Call)
+    return when (coreFn) {
+        CVTCore.ASSUME, CVTCore.ASSERT ->
+            throw TACTranslationError("unsupported call to ${inst.name}. " +
+                "SimplifyBuiltinCalls::renameCVTCall was probably not called.")
+        CVTCore.SANITY ->
+            throw TACTranslationError("unsupported call to ${inst.name}.")
+        CVTCore.SATISFY ->
+            translateSatisfy(inst)
+        CVTCore.SAVE_SCRATCH_REGISTERS ->
+            translateSaveScratchRegisters(locInst)
+        CVTCore.RESTORE_SCRATCH_REGISTERS ->
+            translateRestoreScratchRegisters(inst)
+        CVTCore.MASK_64 ->
+            translateMask64()
+        CVTCore.IS_ACCOUNT_WRITTEN -> {
+            val res = sbfTacB.mkVar(SbfRegister.R0)
+            val loc = sbfTacB.mkVar(SbfRegister.R1)
+            accounts.isWritten(res, loc)
+        }
+        CVTCore.NONDET_ACCOUNT_INFO -> {
+            if (!SolanaConfig.CvtNondetAccountInfo.get()) {
+                /**
+                 * IMPORTANT: we don't treat this function as a summarized function for which we would do
+                 * symbolic allocation at the TAC level because this function is already precisely modeled at the
+                 * Rust level.
+                 */
+                listOf(Debug.externalCall(inst))
+            } else {
+                summarizeCall(locInst)
+            }
+        }
+        CVTCore.NONDET_SOLANA_ACCOUNT_SPACE -> {
+            val size = (types.typeAtInstruction(locInst, SbfRegister.R1) as? SbfType.NumType)?.value?.toLongOrNull()
+                ?: throw TACTranslationError("Cannot statically infer the size in $locInst")
+            listOf(Debug.externalCall(inst)) +
+                accountsAlloc.alloc(sbfTacB.mkVar(SbfRegister.R0), size) +
+                listOf(Calltrace.externalCall(inst, listOf(sbfTacB.mkVar(SbfRegister.R0))))
+        }
+        CVTCore.ALLOC_SLICE ->
+            summarizeAllocSlice(locInst)
+    }
+}
+
 /** Emit TAC code for pushing scratch registers **/
 context(SbfCFGToTAC<TNum, TOffset, TFlags>)
-fun<TNum : INumValue<TNum>, TOffset : IOffset<TOffset>, TFlags: IPTANodeFlags<TFlags>> translateSaveScratchRegisters(
+internal fun<TNum : INumValue<TNum>, TOffset : IOffset<TOffset>, TFlags: IPTANodeFlags<TFlags>> translateSaveScratchRegisters(
     locInst: LocatedSbfInstruction
 ): List<TACCmd.Simple> {
     val inst = locInst.inst
@@ -38,14 +88,14 @@ fun<TNum : INumValue<TNum>, TOffset : IOffset<TOffset>, TFlags: IPTANodeFlags<TF
     // If the call doesn't have this metadata then by assuming 0 the call won't appear in the calltrace.
     val calleeSize = inst.metaData.getVal(SbfMeta.INLINED_FUNCTION_SIZE)?: 0UL
 
-    val v6 = vFac.mkFreshIntVar(prefix = "saved_r6")
-    val v7 = vFac.mkFreshIntVar(prefix = "saved_r7")
-    val v8 = vFac.mkFreshIntVar(prefix = "saved_r8")
-    val v9 = vFac.mkFreshIntVar(prefix = "saved_r9")
-    scratchRegVars.add(v6)
-    scratchRegVars.add(v7)
-    scratchRegVars.add(v8)
-    scratchRegVars.add(v9)
+    val regsToSave = SbfRegister.registersToSaveOrRestore
+
+    val savedVars = regsToSave.map { reg ->
+        vFac.mkFreshIntVar(prefix = "saved_r${reg.value}").also {
+            scratchRegVars.add(it)
+        }
+    }
+
     val startInlineAnnot = inst.toStartInlinedAnnotation(locInst)?.let {
         if (calleeSize >= SolanaConfig.TACMinSizeForCalltrace.get().toULong()) {
             listOf(
@@ -66,16 +116,14 @@ fun<TNum : INumValue<TNum>, TOffset : IOffset<TOffset>, TFlags: IPTANodeFlags<TF
             listOf(Debug.startFunction(it))
         }
     } ?: listOf()
-    return startInlineAnnot + listOf(
-        assign(v6, TACExpr.Sym.Var(exprBuilder.mkVar(SbfRegister.R6))),
-        assign(v7, TACExpr.Sym.Var(exprBuilder.mkVar(SbfRegister.R7))),
-        assign(v8, TACExpr.Sym.Var(exprBuilder.mkVar(SbfRegister.R8))),
-        assign(v9, TACExpr.Sym.Var(exprBuilder.mkVar(SbfRegister.R9)))
-    )
+
+    return startInlineAnnot + savedVars.zip(regsToSave).map { (v, reg) ->
+        assign(v, TACExpr.Sym.Var(sbfTacB.mkVar(reg)))
+    }
 }
 
 context(SbfCFGToTAC<TNum, TOffset, TFlags>)
-fun<TNum : INumValue<TNum>, TOffset : IOffset<TOffset>, TFlags: IPTANodeFlags<TFlags>> SbfInstruction.Call.toStartInlinedAnnotation(
+internal fun<TNum : INumValue<TNum>, TOffset : IOffset<TOffset>, TFlags: IPTANodeFlags<TFlags>> SbfInstruction.Call.toStartInlinedAnnotation(
     locInst: LocatedSbfInstruction
 ): SbfInlinedFuncStartAnnotation? {
     if (!isSaveScratchRegisters()) {
@@ -116,20 +164,23 @@ fun<TNum : INumValue<TNum>, TOffset : IOffset<TOffset>, TFlags: IPTANodeFlags<TF
 
 /** Emit TAC code for popping scratch registers **/
 context(SbfCFGToTAC<TNum, TOffset, TFlags>)
-fun<TNum : INumValue<TNum>, TOffset : IOffset<TOffset>, TFlags: IPTANodeFlags<TFlags>> translateRestoreScratchRegisters(
+internal fun<TNum : INumValue<TNum>, TOffset : IOffset<TOffset>, TFlags: IPTANodeFlags<TFlags>> translateRestoreScratchRegisters(
     inst: SbfInstruction.Call
 ): List<TACCmd.Simple> {
-    if (scratchRegVars.size < 4) {
+
+    val regsToRestore = SbfRegister.registersToSaveOrRestore
+
+    val n = regsToRestore.size
+    if (scratchRegVars.size < n) {
         throw TACTranslationError("number of save/restore does not match")
     }
 
     // If the call doesn't have this metadata then by assuming 0 the call won't appear in the calltrace.
     val calleeSize = inst.metaData.getVal(SbfMeta.INLINED_FUNCTION_SIZE)?: 0UL
 
-    val v9 = scratchRegVars.removeLast()
-    val v8 = scratchRegVars.removeLast()
-    val v7 = scratchRegVars.removeLast()
-    val v6 = scratchRegVars.removeLast()
+    // Pop n vars (LIFO order: v10, v9, v8, v7, v6), then reverse to align with scratchRegisters order
+    val savedVars = (0 until n).map { scratchRegVars.removeLast() }.reversed()
+
     val endInlineAnnot = inst.toEndInlineAnnotation()?.let {
         listOf(
             if (calleeSize >= SolanaConfig.TACMinSizeForCalltrace.get().toULong()) {
@@ -141,23 +192,20 @@ fun<TNum : INumValue<TNum>, TOffset : IOffset<TOffset>, TFlags: IPTANodeFlags<TF
             }
         )
     } ?: listOf()
-    return endInlineAnnot + listOf(
-        assign(exprBuilder.mkVar(SbfRegister.R6), TACExpr.Sym.Var(v6)),
-        assign(exprBuilder.mkVar(SbfRegister.R7), TACExpr.Sym.Var(v7)),
-        assign(exprBuilder.mkVar(SbfRegister.R8), TACExpr.Sym.Var(v8)),
-        assign(exprBuilder.mkVar(SbfRegister.R9), TACExpr.Sym.Var(v9))
-    )
+    return endInlineAnnot + regsToRestore.zip(savedVars).map { (reg, v) ->
+        assign(sbfTacB.mkVar(reg), TACExpr.Sym.Var(v))
+    }
 }
 
 context(SbfCFGToTAC<TNum, TOffset, TFlags>)
-fun<TNum : INumValue<TNum>, TOffset : IOffset<TOffset>, TFlags: IPTANodeFlags<TFlags>>
+internal fun<TNum : INumValue<TNum>, TOffset : IOffset<TOffset>, TFlags: IPTANodeFlags<TFlags>>
 SbfInstruction.Call.toEndInlineAnnotation(): SbfInlinedFuncEndAnnotation? {
     if (CVTFunction.from(name) != CVTFunction.Core(CVTCore.RESTORE_SCRATCH_REGISTERS)) {
         return null
     }
     val fnName = metaData.getVal(SbfMeta.INLINED_FUNCTION_NAME) ?: return null
     val callId = metaData.getVal(SbfMeta.CALL_ID)?.toInt() ?: return null
-    val retVar = exprBuilder.mkVar(SbfRegister.R0_RETURN_VALUE)
+    val retVar = sbfTacB.mkVar(SbfRegister.R0)
     return SbfInlinedFuncEndAnnotation(
         name = fnName,
         id = callId,
@@ -178,47 +226,41 @@ SbfInstruction.Call.toEndInlineAnnotation(): SbfInlinedFuncEndAnnotation? {
  *  **IMPORTANT**: we cannot check the preconditions at the TAC level so they must be ensured when calling CVT_alloc_slice
  **/
 context(SbfCFGToTAC<TNum, TOffset, TFlags>)
-fun<TNum : INumValue<TNum>, TOffset : IOffset<TOffset>, TFlags: IPTANodeFlags<TFlags>> summarizeAllocSlice(
+internal fun<TNum : INumValue<TNum>, TOffset : IOffset<TOffset>, TFlags: IPTANodeFlags<TFlags>> summarizeAllocSlice(
     locInst: LocatedSbfInstruction
 ): List<TACCmd.Simple> {
     val inst = locInst.inst
     check(inst is SbfInstruction.Call)
-    val offset = (types.typeAtInstruction(locInst, SbfRegister.R2_ARG) as? SbfType.NumType)?.value?.toLongOrNull()
+    val offset = (types.typeAtInstruction(locInst, SbfRegister.R2) as? SbfType.NumType)?.value?.toLongOrNull()
         ?: throw TACTranslationError("Cannot statically infer the offset (r2) in $locInst")
     if (offset < 0) {
         throw TACTranslationError("$locInst does not support negative offsets (r2) but given $offset")
     }
-    val baseE = exprBuilder.mkVar(SbfRegister.R1_ARG).asSym()
-    val offsetE = exprBuilder.mkConst(Value.Imm(offset.toULong())).asSym()
-    val lhsE = exprBuilder.mkVar(SbfRegister.R0_RETURN_VALUE)
+    val baseE = sbfTacB.mkVar(SbfRegister.R1).asSym()
+    val offsetE = sbfTacB.mkConst(Value.Imm(offset.toULong())).asSym()
+    val lhsE = sbfTacB.mkVar(SbfRegister.R0)
     return if (SolanaConfig.UseTACMathInt.get()) {
         val (x, y, z) = Triple(vFac.mkFreshMathIntVar(), vFac.mkFreshMathIntVar(), vFac.mkFreshMathIntVar())
         listOf(
             promoteToMathInt(baseE, x),
             promoteToMathInt(offsetE, y),
-            assign(z, exprBuilder.mkBinExpr(BinOp.ADD, x.asSym(), y.asSym(), useMathInt = true)),
+            assign(z, BinOp.ADD(x.asSym(), y.asSym(), useMathInt = true, sbfTacB)),
             narrowFromMathInt(z.asSym(), lhsE),
-            Calltrace.externalCall(
-                inst,
-                listOf(exprBuilder.mkVar(SbfRegister.R0_RETURN_VALUE))
-            )
+            Calltrace.externalCall(inst, listOf(sbfTacB.mkVar(SbfRegister.R0)))
         )
     } else {
-        val rhs = exprBuilder.mkBinExpr(BinOp.ADD, baseE, offsetE, useMathInt = false)
+        val rhs = BinOp.ADD(baseE, offsetE, useMathInt = false, sbfTacB)
         listOf(
             assign(lhsE, rhs),
-            Calltrace.externalCall(
-                inst,
-                listOf(exprBuilder.mkVar(SbfRegister.R0_RETURN_VALUE))
-            )
+            Calltrace.externalCall(inst, listOf(sbfTacB.mkVar(SbfRegister.R0)))
         )
     }
 }
 
 /** Emit TAC code for special intrinsics that masks `r1` with `0xFFFF_FFFF` and store the result in `r0` **/
 context(SbfCFGToTAC<TNum, TOffset, TFlags>)
-fun<TNum : INumValue<TNum>, TOffset : IOffset<TOffset>, TFlags: IPTANodeFlags<TFlags>> translateMask64(): List<TACCmd.Simple> {
-    val v0 = exprBuilder.mkVar(SbfRegister.R0_RETURN_VALUE)
-    val v1 = exprBuilder.mkVar(SbfRegister.R1_ARG)
-    return listOf(assign(v0, exprBuilder.mask64(v1.asSym())))
+internal fun<TNum : INumValue<TNum>, TOffset : IOffset<TOffset>, TFlags: IPTANodeFlags<TFlags>> translateMask64(): List<TACCmd.Simple> {
+    val v0 = sbfTacB.mkVar(SbfRegister.R0)
+    val v1 = sbfTacB.mkVar(SbfRegister.R1)
+    return listOf(assign(v0, sbfTacB.mask64(v1.asSym())))
 }

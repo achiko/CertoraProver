@@ -34,20 +34,20 @@ internal fun<TNum : INumValue<TNum>, TOffset : IOffset<TOffset>, TFlags: IPTANod
     val inst = locInst.inst
     check(inst is SbfInstruction.Call) { "summarizeCall expects only call instructions" }
 
-    val summaryArgs = mem.getTACMemoryFromSummary(locInst) ?: datastructures.stdcollections.listOf()
+    val summaryArgs = mem.getTACMemoryFromSummary(locInst).orEmpty()
 
     val cmds = mutableListOf(Debug.externalCall(inst))
     if (summaryArgs.isNotEmpty()) {
         for ((i, arg) in summaryArgs.withIndex()) {
             val (tacV, useAssume) =  when (val v = arg.variable) {
                 is TACByteStackVariable -> {
-                    Pair(v.tacVar, false)
+                    v.tacVar to false
                 }
                 is TACByteMapVariable -> {
                     val lhs = vFac.mkFreshIntVar()
-                    val loc = computeTACMapIndex(exprBuilder.mkVar(arg.reg), arg.offset, cmds)
-                    cmds.add(TACCmd.Simple.AssigningCmd.ByteLoad(lhs, loc, v.tacVar))
-                    Pair(lhs, true)
+                    val idx = computeTACMapIndex(sbfTacB.mkVar(arg.reg), arg.offset, cmds)
+                    cmds += sbfTacB.load(lhs, idx, arg.width.toShort(), v.tacVar)
+                    lhs to true
                 }
             }
 
@@ -85,7 +85,7 @@ internal fun<TNum : INumValue<TNum>, TOffset : IOffset<TOffset>, TFlags: IPTANod
                     //   assume(x == some fixed address) // this propagates back to M
                     //   assume(y == x + 1024)           // this propagates back to M
                     //   ```
-                    cmds.addAll(heapMemAlloc.alloc(tacV, allocatedSize, useAssume))
+                    cmds += heapMemAlloc.alloc(tacV, allocatedSize, useAssume)
                 }
                 MemSummaryArgumentType.PTR_EXTERNAL -> {
                     val allocatedSize = if (arg.allocatedSpace > 0UL) {
@@ -95,16 +95,14 @@ internal fun<TNum : INumValue<TNum>, TOffset : IOffset<TOffset>, TFlags: IPTANod
                         sbfLogger.warn { "TAC allocation of unknown size: fixing $defaultSize bytes for $i-th parameter at $locInst" }
                         defaultSize
                     }
-                    cmds.addAll(extMemAlloc.alloc(tacV, allocatedSize, useAssume))
+                    cmds += extMemAlloc.alloc(tacV, allocatedSize, useAssume)
                 }
-                else -> {
-                    cmds.add(TACCmd.Simple.AssigningCmd.AssignHavocCmd(tacV))
-                }
+                else -> cmds += havoc(tacV)
             }
 
         }
     }
-    cmds.add(TACCmd.Simple.AssigningCmd.AssignHavocCmd(exprBuilder.mkVar(SbfRegister.R0_RETURN_VALUE)))
+    cmds += havoc(sbfTacB.mkVar(SbfRegister.R0))
     if (memoryAnalysis?.memSummaries?.getSummary(inst.name) == null) {
         unsupportedCalls.add(inst.name)
     }

@@ -1,0 +1,8 @@
+{
+  "assertMessages": {
+    "sunbeam_multi_assert_second_fails": "Failed property in cvt::assert"
+  },
+  "rules": {
+    "sunbeam_multi_assert_second_fails": "FAIL"
+  }
+}

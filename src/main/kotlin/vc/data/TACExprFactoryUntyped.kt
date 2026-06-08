@@ -342,7 +342,11 @@ interface TACExprFact {
 
     fun <@Treapable T : Serializable> AnnotationExp(o: TACExpr, k: MetaKey<T>, v: T) =
         TACExpr.AnnotationExp(o, k, v)
+    fun AnnotationExp(o: TACExpr, k: MetaKey<Nothing>) =
+        TACExpr.AnnotationExp(o, k)
 
+    fun <@Treapable T : Serializable> ToTACExpr.annotated(k: MetaKey<T>, v: T) = AnnotationExp(this.toTACExpr(), k, v)
+    fun ToTACExpr.annotated(k: MetaKey<Nothing>) = AnnotationExp(this.toTACExpr(), k)
 }
 
 object TACExprFactUntyped : TACExprFact {

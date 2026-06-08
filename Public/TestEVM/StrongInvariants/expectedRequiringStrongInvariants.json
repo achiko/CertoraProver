@@ -1,0 +1,7 @@
+{
+  "rules": {
+    "simpleRuleRequiringStrongInvariant": "SUCCESS",
+    "simpleRuleRequiringWeakInvariant": "FAIL",
+    "simpleRuleRequiringStrongInvariantDelegate": "SUCCESS"
+  }
+}

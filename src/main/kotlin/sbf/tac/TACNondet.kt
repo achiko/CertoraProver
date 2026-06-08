@@ -23,59 +23,46 @@ import sbf.cfg.SbfInstruction
 import sbf.disassembler.SbfRegister
 import sbf.domains.*
 import vc.data.TACCmd
-import java.math.BigInteger
 
 /** Emit TAC code for nondet functions **/
 context(SbfCFGToTAC<TNum, TOffset, TFlags>)
-fun<TNum : INumValue<TNum>, TOffset : IOffset<TOffset>, TFlags: IPTANodeFlags<TFlags>> summarizeNondet(
+internal fun<TNum : INumValue<TNum>, TOffset : IOffset<TOffset>, TFlags: IPTANodeFlags<TFlags>> summarizeNondet(
     nondetFn: CVTNondet, inst: SbfInstruction.Call
 ): List<TACCmd.Simple> {
     when (nondetFn) {
         CVTNondet.NONDET_I8, CVTNondet.NONDET_I16, CVTNondet.NONDET_I32, CVTNondet.NONDET_I64 -> {
-            val r0 = exprBuilder.mkVar(SbfRegister.R0_RETURN_VALUE)
-            val n = when (nondetFn) {
-                CVTNondet.NONDET_I8  -> BigInteger.TWO.pow(8-1)
-                CVTNondet.NONDET_I16 -> BigInteger.TWO.pow(16-1)
-                CVTNondet.NONDET_I32 -> BigInteger.TWO.pow(32-1)
-                CVTNondet.NONDET_I64 -> BigInteger.TWO.pow(64-1)
-                else -> {
-                    // compiler is not smart enough
-                    throw TACTranslationError("Unexpected CVT_nondet signed integer function ${inst.name}")
-                }
+            val r0 = sbfTacB.mkVar(SbfRegister.R0)
+            val bits = when (nondetFn) {
+                CVTNondet.NONDET_I8  ->  8
+                CVTNondet.NONDET_I16 ->  16
+                CVTNondet.NONDET_I32 ->  32
+                CVTNondet.NONDET_I64 ->  64
+                else -> throw TACTranslationError("Unexpected CVT_nondet signed integer function ${inst.name}")
             }
-            return listOf(
-                Debug.externalCall(inst),
-                TACCmd.Simple.AssigningCmd.AssignHavocCmd(r0)
-            ) +
-                inRange(r0, -n, n, false) +
-                listOf(
-                    Calltrace.externalCall(
-                        inst,
-                        listOf(r0)
-                    )
-                )
+            val rangeAssume = sbfTacB.assumeSignedIntRange(r0, bits)
+            return listOf(Debug.externalCall(inst),
+                   havoc(r0)) +
+                   rangeAssume +
+                   listOf(Calltrace.externalCall(inst, listOf(r0)))
         }
         CVTNondet.NONDET_U8, CVTNondet.NONDET_U16, CVTNondet.NONDET_U32, CVTNondet.NONDET_U64, CVTNondet.NONDET_USIZE -> {
-            val r0 = exprBuilder.mkVar(SbfRegister.R0_RETURN_VALUE)
-            val n = when (nondetFn) {
-                CVTNondet.NONDET_U8  -> BigInteger.TWO.pow(8)
-                CVTNondet.NONDET_U16 -> BigInteger.TWO.pow(16)
-                CVTNondet.NONDET_U32 -> BigInteger.TWO.pow(32)
+            val r0 = sbfTacB.mkVar(SbfRegister.R0)
+            val bits = when (nondetFn) {
+                CVTNondet.NONDET_U8  ->  8
+                CVTNondet.NONDET_U16 ->  16
+                CVTNondet.NONDET_U32 ->  32
                 CVTNondet.NONDET_U64, CVTNondet.NONDET_USIZE -> {
                     /// usize is the size of a pointer
-                    BigInteger.TWO.pow(64)
+                    64
                 }
-                else -> {
-                    // compiler is not smart enough
-                    throw TACTranslationError("Unexpected CVT_nondet unsigned integer function ${inst.name}")
-                }
+                else -> throw TACTranslationError("Unexpected CVT_nondet unsigned integer function ${inst.name}")
             }
             return listOf(
-                Debug.externalCall(inst),
-                TACCmd.Simple.AssigningCmd.AssignHavocCmd(r0)
-            ) +
-                inRange(r0, BigInteger.ZERO, n) +
-                Calltrace.externalCall(inst, listOf(r0))
+                    Debug.externalCall(inst),
+                    havoc(r0)
+                    ) +
+                    sbfTacB.assumeUnsignedIntRange(r0, bits) +
+                    Calltrace.externalCall(inst, listOf(r0))
         }
     }
 }

@@ -45,6 +45,7 @@ class SolanaFlowTreeViewReporterTest {
      */
     private val totalVerifiedAssert = rulesToAsserts.values.sumOf { it.verifiedAsserts }
 
+    private val totalAssertWithNoVerified = rulesToAsserts.values.count { it.verifiedAsserts == 0 }
 
     @Test
     fun multiAssertFlow() {
@@ -72,15 +73,26 @@ class SolanaFlowTreeViewReporterTest {
             val pathsToLeaves = treeView.pathsToLeaves()
 
             // For each rule, since there's only a single assert, we generate
-            // 1) a node for the basic sanity rule
+            // 1) a node for the basic sanity rule, _if the rule is verified_
             // 2) a node for the user's assert (regardless if it was verified or not),
             //    and a parent node for this user assert node
             //
             // therefore:
-            // 3 nodes in total for each rule, and of these 3 nodes, 2 are leaves.
+            // 3 nodes in total for each verified rule or 2 nodes otherwise. one is a leaf
 
-            assertEquals(3 * rulesToAsserts.keys.size, nodes.size, "Found $nodes")
-            assertEquals(2 * rulesToAsserts.keys.size, pathsToLeaves.size, "Found $pathsToLeaves")
+            assertEquals(
+                3 * totalVerifiedAssert + 2 * totalAssertWithNoVerified,
+                nodes.size,
+                "Found $nodes"
+            )
+
+            // verified asserts get a sanity rule node,
+            // and this node is a child of their parent.
+            assertEquals(
+                rulesToAsserts.keys.size + totalVerifiedAssert,
+                pathsToLeaves.size,
+                "Found $pathsToLeaves"
+            )
         }
     }
 
@@ -92,13 +104,13 @@ class SolanaFlowTreeViewReporterTest {
 
             /**
              * Advanced mode runs all basic sanity rules and on all verified asserts of the [rules.sanity.TACSanityChecks.VacuityCheck].
-             * 1) for each rule, we get 3 nodes (see comment in [sanityBasicFlow]).
+             * 1) for each rule, we get 2 or 3 nodes (see comment in [sanityBasicFlow]).
              * 2) in advanced sanity mode, verified rules get a vacuity check.
              *    since 2 of the 3 rules are verified, that's 2 nodes in total
              * since this is advanced mode.
              */
             assertEquals(
-                (3 * rulesToAsserts.keys.size) + totalVerifiedAssert,
+                (3 * totalVerifiedAssert + 2 * totalAssertWithNoVerified) + totalVerifiedAssert,
                 nodes.size,
                 "Found $nodes"
             )
@@ -111,12 +123,12 @@ class SolanaFlowTreeViewReporterTest {
             val treeView = SolanaFlowTest.runSolanaFlowOnProjectForTests(SolanaCallTraceTest.confPath, SolanaCallTraceTest.elfFilePath, rulesToAsserts.keys.toHashSet()).first
             val nodes = treeView.nodes()
 
-            assertEquals(
-                rulesToAsserts.keys.size  // The nodes at the base level
-                    + rulesToAsserts.keys.size // The rules are duplicated due to sanity basic rules
-                    + totalAsserts // All nodes below the base level that are generated due to multi assert mode
-                    + totalVerifiedAssert // The sanity rules that are running for verified assert in [rules.sanity.TACSanityChecks.VacuityCheck]
-                , nodes.size, "Found $nodes")
+            var expected = 0
+            expected += rulesToAsserts.keys.size  // The nodes at the base level
+            expected += totalAsserts // All nodes below the base level that are generated due to multi assert mode
+            expected += totalVerifiedAssert // The sanity rules that are running for verified assert in [rules.sanity.TACSanityChecks.VacuityCheck]
+
+            assertEquals(expected, nodes.size, "Found $nodes")
         }
     }
 }

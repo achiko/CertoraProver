@@ -129,3 +129,15 @@ rule callWithUnsuedParameter() {
     uint z = unusedParameter(e, x, y);
     assert z == x + y;
 }
+
+rule correlatedCondition() {
+    bool condition;
+    uint x;
+    uint y;
+    if(x > y){
+       foo = false;
+    } else {
+       foo = true;
+    }
+    assert foo;
+}

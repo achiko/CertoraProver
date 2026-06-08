@@ -17,7 +17,6 @@
 
 package sbf.domains
 
-import com.certora.collect.*
 import sbf.SolanaConfig
 import sbf.cfg.*
 import sbf.disassembler.*
@@ -83,19 +82,40 @@ sealed class SbfType<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>> {
          *  In that case, we will return null.
          **/
         fun castToPtr(sbfTypeFac: ISbfTypeFactory<TNum, TOffset>, globals: GlobalVariables): PointerType<TNum, TOffset>? {
-            val addr = value.toLongOrNull() ?: return null
+            val addr = value.toLongOrNull()
 
-            // Heap pointer case
-            if (addr in SBF_HEAP_START until SBF_HEAP_END) {
-                return sbfTypeFac.toHeapPtr(addr - SBF_HEAP_START)
+            if (addr != null) {
+                // Heap pointer case
+                if (addr in SBF_HEAP_START until SBF_HEAP_END) {
+                    return sbfTypeFac.toHeapPtr(addr - SBF_HEAP_START)
+                }
+
+                // Global variable case
+                globals.findGlobalThatContains(addr)?.let { gv ->
+                    return sbfTypeFac.toGlobalPtr(addr, gv)
+                }
+
+                return null
             }
 
-            // Global variable case
-            globals.findGlobalThatContains(addr)?.let { gv ->
-                return sbfTypeFac.toGlobalPtr(addr, gv)
+            // Multiple possible addresses: return a global pointer only if all addresses belong to the
+            // same global variable
+
+            if (value.isTop()) {
+                return null
             }
 
-            return null
+            val addrs = value.toLongList()
+            check(addrs.isNotEmpty())
+
+            val firstGv = globals.findGlobalThatContains(addrs.first()) ?: return null
+            addrs.forEach { a ->
+                val gv = globals.findGlobalThatContains(a) ?: return null
+                if (gv != firstGv) {
+                    return null
+                }
+            }
+            return sbfTypeFac.toGlobalPtr(addrs, firstGv)
         }
 
         override fun toString() = if (value.isTop()) { "num" } else { "num($value)" }

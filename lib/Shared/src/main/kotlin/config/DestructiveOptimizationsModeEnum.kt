@@ -28,6 +28,8 @@ enum class DestructiveOptimizationsModeEnum {
     TWOSTAGE,
     /** Enable destructive optimizations and then verify violations without them. Fail when a violation can not be checked */
     TWOSTAGE_CHECKED,
+    /** Enable destructive optimizations and interpret the results on the original unoptimized core program. */
+    TWOSTAGE_INTERPRETED,
     /** Enable destructive optimizations */
     ENABLE,
 }
@@ -38,6 +40,7 @@ val DestructiveOptimizationsModeConverter = Converter {
             -> DestructiveOptimizationsModeEnum.DISABLE
         "twostage" -> DestructiveOptimizationsModeEnum.TWOSTAGE
         "twostage-checked" -> DestructiveOptimizationsModeEnum.TWOSTAGE_CHECKED
+        "twostage-interpreted" -> DestructiveOptimizationsModeEnum.TWOSTAGE_INTERPRETED
         "enable", "true", "yes"
             -> DestructiveOptimizationsModeEnum.ENABLE
         else -> throw ConversionException(it, DestructiveOptimizationsModeEnum::class.java)
@@ -47,7 +50,8 @@ val DestructiveOptimizationsModeConverter = Converter {
 fun DestructiveOptimizationsModeEnum.isTwoStageMode(): Boolean {
     return when(this) {
         DestructiveOptimizationsModeEnum.TWOSTAGE,
-        DestructiveOptimizationsModeEnum.TWOSTAGE_CHECKED -> true
+        DestructiveOptimizationsModeEnum.TWOSTAGE_CHECKED,
+        DestructiveOptimizationsModeEnum.TWOSTAGE_INTERPRETED -> true
         DestructiveOptimizationsModeEnum.DISABLE,
         DestructiveOptimizationsModeEnum.ENABLE -> false
     }

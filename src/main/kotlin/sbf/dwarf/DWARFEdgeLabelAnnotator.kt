@@ -33,7 +33,6 @@ import utils.*
 import vc.data.CoreTACProgram
 import vc.data.SnippetCmd
 import vc.data.TACMeta
-import vc.data.tacexprutil.*
 
 val logger = Logger(LoggerTypes.SBF_DEBUG_ANNOTATOR)
 
@@ -93,7 +92,7 @@ private typealias InsPtr = Pair<Label, Int>
  */
 
 private const val ALIGNMENT = 8
-private val STACKREG = Value.Reg(SbfRegister.R10_STACK_POINTER)
+private val STACKREG = Value.Reg(SbfRegister.R10)
 
 class DWARFEdgeLabelAnnotator(
     private val debugInformation: DebugSymbols,
@@ -451,7 +450,7 @@ class DWARFEdgeLabelAnnotator(
 
     private fun getExplicitDebugStep(addr: ULong): DWARFCfgEdgeLabel.DebugStep? {
         return debugInformation.lookUpLineNumberInfo(addr)?.let {
-            it.getRange().nonEmpty()?.let { r -> DWARFCfgEdgeLabel.DebugStep(r) }
+            it.asRange()?.let { r -> DWARFCfgEdgeLabel.DebugStep(r) }
         }
     }
 
@@ -660,7 +659,7 @@ data class CallStackLevel private constructor(val scopes: Set<DwarfMethod>, val 
                     val registerAccess = ops.getRegisterAccess(currIns.access.base.r)
                     if (registerAccess != null) {
                         val registerOffset = registerAccess.offset()
-                        val offsetIntoStruct = currIns.access.offset - (frameBasePointer.toLong() + registerOffset)
+                        val offsetIntoStruct = currIns.access.offset - (frameBasePointer + registerOffset)
                         if (offset == Offset(offsetIntoStruct.toULong())) {
                             DWARFCfgEdgeLabel.DirectMemoryAccess(this, sourceVariable, offset, ops, currIns, currIns.value)
                         } else {
@@ -740,7 +739,7 @@ fun List<DWARFOperation>.getRegisterAccess(register: SbfRegister): DWARFOperatio
         when (it) {
             is DWARFOperation.Register -> register.value == it.register.toByte()
             is DWARFOperation.RegisterOffset -> register.value == it.register.toByte()
-            is DWARFOperation.FrameOffset -> register == SbfRegister.R10_STACK_POINTER
+            is DWARFOperation.FrameOffset -> register == SbfRegister.R10
         }
     }
     if (filteredRes.size > 1) {
@@ -778,7 +777,7 @@ fun List<DWARFOperation>.splitOperationsInPieces(variableType: RustType?): Map<P
         }
     }
 
-    check(lastSplit.second <= variableType.getByteSize()) { "The size of the type in the dwarf operation list (${lastSplit.second}) exceeds the variable type size (variable type size: ${variableType.getByteSize()}) - operations list $this, $variableType " }
+    checkWarn(lastSplit.second <= variableType.getByteSize()) { "The size of the type in the dwarf operation list (${lastSplit.second}) exceeds the variable type size (variable type size: ${variableType.getByteSize()}) - operations list $this, $variableType " }
     //Calling store as Result one last time to persist the remaining part.
     storeAsResult(lastSplit.first, lastSplit.second, variableType.getByteSize() - lastSplit.second)
     return offsetToOperations

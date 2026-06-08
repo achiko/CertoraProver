@@ -606,6 +606,8 @@ class ContractClass(
         StorageInfoWithReadTracker(storageVariables = mapOf(EthereumVariables.getStorageInternal(this.instanceId) to null))
     override var transientStorageInfoField: IStorageInfo =
         StorageInfo(storageVariables = setOf(EthereumVariables.getTransientStorageInternal(this.instanceId)))
+    override var resolvedLinksField: ResolvedLinks =
+        spec.translateConfLinksToResolvedLinks(src)
 
 
     override fun fork(): IContractClass {
@@ -618,6 +620,7 @@ class ContractClass(
             transientStorageLayout = this.getTransientStorageLayout(),
             storageInfoField = this.storageInfoField,
             transientStorageInfoField = this.transientStorageInfoField,
+            resolvedLinksField = this.resolvedLinksField,
             bytecode = this.bytecode,
             constructorBytecode = this.constructorBytecode
         )

@@ -17,7 +17,6 @@
 
 package move
 
-import analysis.CommandWithRequiredDecls.Companion.mergeMany
 import analysis.SimpleCmdsWithDecls
 import com.certora.collect.*
 import datastructures.stdcollections.*
@@ -379,21 +378,8 @@ fun MoveType.Simple.assignHavoc(dest: TACSymbol.Var, meta: MetaMap = MetaMap()):
     }
 }
 
-fun MoveType.assignHavoc(dest: TACSymbol.Var, meta: MetaMap = MetaMap()): MoveCmdsWithDecls {
+fun MoveType.Value.assignHavoc(dest: TACSymbol.Var, meta: MetaMap = MetaMap()): MoveCmdsWithDecls {
     return when (val type = this) {
-        is MoveType.Reference -> {
-            // For reference types, we create a temporary location, havoc it, and then borrow it.
-            // TODO CERT-9083: this isn't right in all situations; we will probably need more contol over this.
-            val havocLoc = TACKeyword.TMP(type.refType.toTag(), "havocLoc")
-            mergeMany(
-                tac.generation.assignHavoc(havocLoc, meta),
-                TACCmd.Move.BorrowLocCmd(
-                    ref = dest,
-                    loc = havocLoc,
-                    meta = meta
-                ).withDecls()
-            )
-        }
         is MoveType.Simple -> type.assignHavoc(dest, meta)
         is MoveType.Vector, is MoveType.Struct, is MoveType.Enum, is MoveType.GhostArray -> {
             tac.generation.assignHavoc(dest, meta)

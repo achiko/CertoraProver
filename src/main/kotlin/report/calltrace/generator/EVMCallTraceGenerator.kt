@@ -922,6 +922,20 @@ private fun Logger.warnAndNull(f: () -> String): Nothing? {
 
 private fun CVLHookPattern.toHookApplicationHeader(snippet: SnippetCmd.CVLSnippetCmd.InlinedHook): CallInstance.LabelInstance {
     val patternDescription = when (this) {
+        is CVLHookPattern.Event -> {
+            fun CVLHookPattern.Event.EventParam.pp(): String {
+                val tySuff = if(this.indexed) {
+                    " indexed"
+                } else { "" }
+                val typeDecl = this.param.type.prettyPrint() +  tySuff
+                return typeDecl + this.param.name?.let { nm ->
+                    " $nm"
+                }.orEmpty()
+            }
+            "Emit event ${this.eventName}(${this.eventParams.joinToString(", ") {
+                it.pp()
+            }}"
+        }
         is CVLHookPattern.Create -> "create"
 
         is CVLHookPattern.StoragePattern.Load -> "load ${value.id} := $slot"

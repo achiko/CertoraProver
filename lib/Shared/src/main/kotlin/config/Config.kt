@@ -1505,6 +1505,14 @@ object Config {
             "Choose whether return value havocs are assuming returnsize is call's requested outsize (unsound!) [default: false]"
         )
     ) {}
+    val HavocAllByDefault = object : ConfigType.BooleanCmdLine(
+        false,
+        Option(
+            "havocAllByDefault",
+            true,
+            "When enabled, use HAVOC_ALL for all non-STATIC external calls by default. [default: false]"
+        )
+    ) {}
     val OptimisticExtcodesize = object : ConfigType.BooleanCmdLine(
         true,
         Option(
@@ -1945,6 +1953,15 @@ object Config {
         )
     ) {}
 
+    val UseUnresolvedHarness = object : ConfigType.BooleanCmdLine(
+        false,
+        Option(
+            "useUnresolvedHarness",
+            true,
+            "Redirect calls that would otherwise be havoc'd to the fallback of a contract named CertoraUnresolvedHarness, if present in the scene [default: false]"
+        )
+    ) {}
+
     val AutoNondetMinimalDifficulty = object : ConfigType.IntCmdLine(
         50,
         Option(
@@ -2362,7 +2379,7 @@ object Config {
         option = Option(
             "patternRewriter",
             true,
-            "The maximal number of times to run PatternRewriter in sequence [default : 4]"
+            "The maximal number of times to run PatternRewriter in sequence [default : 10]"
         )
     ) {}
 
@@ -2743,6 +2760,24 @@ object Config {
             "When using contract extensions, allow the extending contract to override extended contract functions of the same name [default: false]"
         ),
         pythonName = "--contract_extensions_override"
+    ) {}
+
+    val PurifyDivisions = object : ConfigType.BooleanCmdLine(
+        default = false,
+        option = Option(
+            "purifyDivisions",
+            true,
+            "Rewrites divisions into constrained multiplications [default: false]"
+        )
+    ) {}
+
+    val PurifyConstDivisions = object : ConfigType.BooleanCmdLine(
+        default = false,
+        option = Option(
+            "purifyConstDivisions",
+            true,
+            "Rewrites divisions with a constant denominator into constrained multiplications [default: false]"
+        )
     ) {}
 
     val HashingScheme = Smt.HashingScheme
@@ -3289,6 +3324,89 @@ object Config {
                 "Support precise bytemap semantic (unaligned reads, overlapping, etc.) [default: false]"
             )
         ), TransformationAgnosticConfig {}
+    }
+
+    /**
+     * Solver settings overrides for built-in sanity rules. Each option defaults to the value of the corresponding
+     * standard run option when not explicitly set.
+     */
+    val SanityDepth: ConfigType.IntCmdLine = object : ConfigType.IntCmdLine(
+        SplittingDepthPrivate.default,
+        Option(
+            "sanityDepth",
+            true,
+            "Set max splitting depth for rule sanity checks [default: value of --${SplittingDepthPrivate.option.realOpt()}]"
+        )
+    ), RuleCacheAgnosticConfig {
+        override fun get() = if (isDefault()) { Smt.SplittingDepth } else { super.get() }
+    }
+
+    val SanityParallelSplitting: ConfigType.BooleanCmdLine = object : ConfigType.BooleanCmdLine(
+        ParallelSplitting.default,
+        Option(
+            "sanitySplitParallel",
+            true,
+            "Enable parallelised splitting for rule sanity checks [default: value of --${ParallelSplitting.option.realOpt()}]"
+        )
+    ), RuleCacheAgnosticConfig {
+        override fun get() = if (isDefault()) { ParallelSplitting.get() } else { super.get() }
+    }
+
+    val SanitySolverTimeout: ConfigType.IntCmdLine = object : ConfigType.IntCmdLine(
+        SolverTimeout.default,
+        Option(
+            "sanitySolverTimeout",
+            true,
+            "Solver timeout (seconds) for rule sanity checks [default: value of --${SolverTimeout.option.realOpt()}]"
+        )
+    ), RuleCacheAgnosticConfig {
+        override fun get() = if (isDefault()) { SolverTimeout.get() } else { super.get() }
+    }
+
+    val SanitySolverProgramChoice: ConfigType.SolverProgramCmdLine = object : ConfigType.SolverProgramCmdLine(
+        SolverProgramChoice.default!!,
+        Option(
+            "sanitySolver",
+            true,
+            "Solver(s) to use for rule sanity checks [default: value of --${SolverProgramChoice.option.realOpt()}]"
+        )
+    ), TransformationAgnosticConfig {
+        override fun get() = if (isDefault()) { SolverProgramChoice.get() } else { super.get() }
+    }
+
+    val SanityBackendStrategy: ConfigType.CmdLine<BackendStrategyEnum> = object : ConfigType.CmdLine<BackendStrategyEnum>(
+        Smt.BackendStrategy.default,
+        BackendStrategyEnumConverter,
+        Option(
+            "sanityBackendStrategy",
+            true,
+            "Backend solving strategy for rule sanity checks: adaptive, cegar or singlerace. [default: value of --${Smt.BackendStrategy.option.realOpt()}]"
+        )
+    ), TransformationAgnosticConfig {
+        override fun get() = if (isDefault()) { Smt.BackendStrategy.get() } else { super.get() }
+    }
+
+    val SanityUseNIA: ConfigType.BooleanCmdLine = object : ConfigType.BooleanCmdLine(
+        Smt.UseNIA.default,
+        Option(
+            "sanityUseNIA",
+            true,
+            "Include NIA solvers in the race for rule sanity checks [default: value of --${Smt.UseNIA.option.realOpt()}]"
+        )
+    ), TransformationAgnosticConfig {
+        override fun get() = if (isDefault()) { Smt.UseNIA.get() } else { super.get() }
+    }
+
+    val SanityUseLIA: ConfigType.CmdLine<UseLIAEnum> = object : ConfigType.CmdLine<UseLIAEnum>(
+        Smt.UseLIA.default,
+        UseLIAEnumConverter,
+        Option(
+            "sanityUseLIA",
+            true,
+            "Include LIA solvers in the race for rule sanity checks [default: value of --${Smt.UseLIA.option.realOpt()}]"
+        )
+    ), TransformationAgnosticConfig {
+        override fun get() = if (isDefault()) { Smt.UseLIA.get() } else { super.get() }
     }
 
     /**

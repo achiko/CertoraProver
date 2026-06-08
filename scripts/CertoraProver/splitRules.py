@@ -44,7 +44,7 @@ def update_msg(msg: str, rule_str: str) -> str:
 
 class SplitRulesHandler():
     context: CertoraContext
-    all_rules: Optional[Set[str]] = None  # all rules in the spec file (from Typechecker.jar --listRules)
+    all_rules: Optional[Set[str]] = None  # all rules in the spec (from Typechecker.jar for EVM, from conf file for Rust)
     split_rules: Optional[Set[str]] = None  # all rules that should be run separately (based on --split_rules)
     rest_rules: Optional[Set[str]] = None  # all rules that should not be run separately ( all_rules - split_rules)
 
@@ -66,11 +66,22 @@ class SplitRulesHandler():
 
     def get_cvl_rules(self, split_rules: bool = False) -> Set[str]:
         """
-        getting cvl rules by calling Typechecker.jar with the -listRules option. The flags -buildDirectory and
-        -excludeRule must be sent (if exist) since they are needed for getting the correct rule list
+        getting cvl rules. For EVM, calls Typechecker.jar with the -listRules option.
+        For Rust-based apps (Solana, Soroban), reads rules from the conf file (context.rule).
         :param split_rules:
         :return:
         """
+        if issubclass(self.context.app, App.RustAppClass):
+            return self._get_rules_from_conf(split_rules)
+        return self._get_rules_from_typechecker(split_rules)
+
+    def _get_rules_from_conf(self, split_rules: bool = False) -> Set[str]:
+        all_rules = set(self.context.rule) if self.context.rule else set()
+        if split_rules:
+            return all_rules & set(self.context.split_rules) if self.context.split_rules else set()
+        return all_rules
+
+    def _get_rules_from_typechecker(self, split_rules: bool = False) -> Set[str]:
         def jar_list_value(list_attr: List[str]) -> str:
             return ','.join(list_attr)
 
@@ -94,15 +105,12 @@ class SplitRulesHandler():
                 raise Util.CertoraUserInputError(f"Failed to get {'split ' if split_rules else ''}rules\n{e}")
 
     def run_commands(self) -> int:
-        rule_flag = Attrs.EvmProverAttributes.RULE.get_flag()
-        split_rules_flag = Attrs.EvmProverAttributes.SPLIT_RULES.get_flag()
+        attr_class = self.context.app.attr_class
+        rule_flag = attr_class.RULE.get_flag()
+        split_rules_flag = attr_class.SPLIT_RULES.get_flag()
         msg_flag = Attrs.CommonAttributes.MSG.get_flag()
 
-        # it is important to use the cache, when the difference between the runs is only the rules that apply
-        build_cache_flag = Attrs.EvmProverAttributes.BUILD_CACHE.get_flag()
-
-        group_id_flag = Attrs.EvmProverAttributes.GROUP_ID.get_flag()
-        disable_local_typechecking_flag = Attrs.EvmProverAttributes.DISABLE_LOCAL_TYPECHECKING.get_flag()
+        group_id_flag = attr_class.GROUP_ID.get_flag()
 
         def remove_rule_flags_from_cli() -> List[str]:
             # any --rule flag should be removed from CLI during splitting, since it is set during the split
@@ -120,12 +128,13 @@ class SplitRulesHandler():
         def get_cmd() -> str:
             """
             set executable for the split, if called from command line then it is the first string in argv (prover_cmd)
-            if called as library then if running in local mode we use certoraRun.py otherwise certoraRun (from package)
+            if called as library then if running in local mode we use the script otherwise the installed package command
             :return:
             """
-            assert self.context.app == App.EvmApp, "Split rules is supported only for EVM apps"
             if hasattr(self.context, 'prover_cmd'):
                 return self.context.prover_cmd
+            if issubclass(self.context.app, App.SolanaApp):
+                return "certoraSolanaProver.py" if self.context.local else "certoraSolanaProver"
             if self.context.local:
                 return Util.CERTORA_RUN_SCRIPT
             return Util.CERTORA_RUN_APP
@@ -135,14 +144,19 @@ class SplitRulesHandler():
             # of the rules
             cli_commands = []
             args = remove_rule_flags_from_cli()
-            if not self.context.group_id:
+            if not getattr(self.context, 'group_id', None):
                 self.context.group_id = str(uuid.uuid4())
 
-            if not self.context.msg:
+            if not getattr(self.context, 'msg', None):
                 self.context.msg = ''
 
-            cmd = [get_cmd()] + args + [group_id_flag, self.context.group_id, disable_local_typechecking_flag,
-                                        build_cache_flag, split_rules_flag]
+            cmd = [get_cmd()] + args + [group_id_flag, self.context.group_id, split_rules_flag]
+
+            # EVM-specific flags
+            if hasattr(attr_class, 'BUILD_CACHE'):
+                cmd.append(attr_class.BUILD_CACHE.get_flag())
+            if hasattr(attr_class, 'DISABLE_LOCAL_TYPECHECKING'):
+                cmd.append(attr_class.DISABLE_LOCAL_TYPECHECKING.get_flag())
 
             if self.split_rules:
                 for rule in self.split_rules:
@@ -154,7 +168,7 @@ class SplitRulesHandler():
         # end of run_commands() nested functions
 
         prover_calls = generate_prover_calls()
-        if self.context.test == str(Util.TestValue.AFTER_RULE_SPLIT):
+        if getattr(self.context, 'test', None) == str(Util.TestValue.AFTER_RULE_SPLIT):
             raise Util.TestResultsReady(prover_calls)
 
         processes = []

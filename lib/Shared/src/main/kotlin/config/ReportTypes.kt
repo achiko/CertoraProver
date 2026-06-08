@@ -158,7 +158,7 @@ enum class ReportTypes(val loggerCategory: LoggerTypes) : DumpType, CategoryName
     SPLIT_STORAGE_VAR_HOISTER(LoggerTypes.STORAGE_SPLITTING),
     INLINED_HOOKS(LoggerTypes.HOOK_INSTRUMENTATION),
     REQUIRE_INVARIANT_TRANSFORMER(LoggerTypes.REQUIRE_INVARIANT),
-    STRONG_INVARIANT_INLINER(LoggerTypes.INLINER),
+    STRONG_INVARIANT_INLINER(LoggerTypes.STRONG_INVARIANT_INLINER),
     GHOST_ANNOTATION(LoggerTypes.INSTRUMENTATION),
     CONSTANT_FOLDING(LoggerTypes.OPTIMIZE),
     COLLAPSE_EMPTY_DSA(LoggerTypes.DSA),
@@ -296,6 +296,14 @@ enum class ReportTypes(val loggerCategory: LoggerTypes) : DumpType, CategoryName
     INLINE_STATIC_MEMORY(LoggerTypes.WASM),
     RETURN_COPY_COLLAPSE(LoggerTypes.EQUIVALENCE),
     RETURN_COPY_LABELLING(LoggerTypes.EQUIVALENCE),
+    TAC_PROGRAM_INTERPRETER(LoggerTypes.TAC_PROGRAM_INTERPRETER),
+    REMOVE_SIMPLE_CONSTANT_VARIABLES(LoggerTypes.OPTIMIZE),
+    EXPR_UNFOLDING(LoggerTypes.NORMALIZER),
+    MOD_MATH_NORMALIZE(LoggerTypes.MOD_MATH),
+    MOD_MATH_FIND_MORE_POINTERS(LoggerTypes.MOD_MATH),
+    MOD_MATH_REMOVE_NO_OVERFLOW(LoggerTypes.MOD_MATH),
+    MOD_MATH_SIMPLIFY(LoggerTypes.MOD_MATH),
+    MOD_MATH_INTERVALS_SIMPLIFY(LoggerTypes.MOD_MATH),
     ;
 
     override fun isEnabled(): Boolean = this == NONE || Config.isEnabledLogger(this.loggerCategory) || Config.isEnabledReport(this)

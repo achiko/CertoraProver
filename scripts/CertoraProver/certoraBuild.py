@@ -1448,7 +1448,9 @@ class CertoraBuildGenerator:
             if not self.context.strict_solc_optimizer and self.get_solc_via_ir_value(contract_file_path):
                 # The default optimizer steps (taken from libsolidity/interface/OptimiserSettings.h) but with the
                 # full inliner step removed
-                solc0_8_26_to_0_8_30 = ("dhfoDgvulfnTUtnIfxa[r]EscLMVcul[j]Trpeulxa[r]cLCTUca[r]LSsTFOtfDnca[r]" +
+                solc0_8_34_to_0_8_35 = ("dfDvulfnTUtnIfxa[r]EscLMVcul[j]Trpeulxa[r]cLvifMCTUca[r]LSsTFOtfDnca[r]"
+                                        "IulcscCTUtvifMx[scCTUt]TOntnfDIulvifMjmul[jul]VcTOculjmul")
+                solc0_8_26_to_0_8_33 = ("dhfoDgvulfnTUtnIfxa[r]EscLMVcul[j]Trpeulxa[r]cLCTUca[r]LSsTFOtfDnca[r]" +
                                         "IulcscCTUtx[scCTUt]TOntnfDIuljmul[jul]VcTOculjmul")
                 solc0_8_13_to_0_8_25 = "dhfoDgvulfnTUtnIf[xa[r]EscLMcCTUtTOntnfDIulLculVcul[j]T" + \
                                        "peulxa[rul]xa[r]cLgvifCTUca[r]LSsTFOtfDnca[r]Iulc]jmul[jul]VcTOculjmul"
@@ -1497,8 +1499,10 @@ class CertoraBuildGenerator:
                     yul_optimizer_steps = solc0_8_12
                 elif minor == 8 and 13 <= patch <= 25:
                     yul_optimizer_steps = solc0_8_13_to_0_8_25
-                elif minor == 8 and 26 <= patch <= 30:
-                    yul_optimizer_steps = solc0_8_26_to_0_8_30
+                elif minor == 8 and 26 <= patch <= 33:
+                    yul_optimizer_steps = solc0_8_26_to_0_8_33
+                elif minor == 8 and 34 <= patch <= 35:
+                    yul_optimizer_steps = solc0_8_34_to_0_8_35
                 assert yul_optimizer_steps is not None, \
                     'Yul Optimizer steps missing for requested Solidity version. Please contact Certora team.'
 
@@ -1592,12 +1596,12 @@ class CertoraBuildGenerator:
                                 "evm.bytecode.functionDebugData"]
             ast_selection = ["id", "ast"]
         elif compiler_collector_lang == CompilerLangVy():
-            # Hack: keep the "*" if we did not provide vyper_custom_std_json_in_map
+            sources_dict = {}
+            vyper_custom_std_json_in = None
+
             if self.context.vyper_custom_std_json_in_map:
                 main_contract_for_output_selection = contract_file_as_provided
-            sources_dict = {}
-            with open(contract_file_posix_abs) as f:
-                if self.context.vyper_custom_std_json_in_map and contract_file_as_provided in self.context.vyper_custom_std_json_in_map:
+                if contract_file_as_provided in self.context.vyper_custom_std_json_in_map:
                     """
                     If we're given a custom standard_json, we'll take from it the sources and
                     the search paths.
@@ -1609,18 +1613,36 @@ class CertoraBuildGenerator:
                     if we get more projects.
                     """
                     vyper_custom_std_json_in = self.context.vyper_custom_std_json_in_map[contract_file_as_provided]
-                    with open(vyper_custom_std_json_in) as custom:
-                        custom_json = json.load(custom)
-                        sources_dict = custom_json.get("sources", None)
-                        search_paths_arr = custom_json.get("settings", {}).get("search_paths", None)
-                        additional_asts = [x for x, _ in sources_dict.items() if x.endswith(".vy")]
-                if not sources_dict:
+            elif self.context.resolve_vyper_imports and compiler_collector.compiler_version >= (0, 4, 0):
+                main_contract_for_output_selection = contract_file_as_provided
+                """
+                If resolve_vyper_imports is enabled, we ask the vyper compiler to generate a standard_json for us.
+                """
+                compiler_ver_to_run = get_relevant_compiler(Path(contract_file_as_provided), self.context)
+                vyper_options = f"-f solc_json {contract_file_as_provided} --disable-sys-path"
+                for path in ((self.context.vyper_system_path or []) + (self.context.vyper_import_path or [])):
+                    vyper_options += f" -p {path}"
+                Util.run_compiler_cmd(f"{compiler_ver_to_run} {vyper_options}",
+                                      f"{contract_file_posix_abs.name}.std_json_generated.json",
+                                      wd=compile_wd)
+                vyper_custom_std_json_in = compiler_collector_lang.compilation_output_path(
+                    f"{contract_file_posix_abs.name}.std_json_generated.stdout.json")
+
+            if vyper_custom_std_json_in:
+                with open(vyper_custom_std_json_in) as custom:
+                    custom_json = json.load(custom)
+                    sources_dict = custom_json.get("sources", None)
+                    search_paths_arr = custom_json.get("settings", {}).get("search_paths", None)
+                    additional_asts = [x for x, _ in sources_dict.items() if x.endswith(".vy")]
+
+            if not sources_dict:
+                with open(contract_file_posix_abs) as f:
                     contents = f.read()
                     sources_dict = {str(contract_file_posix_abs): {"content": contents}}
-                output_selection = ["abi", "evm.bytecode", "evm.deployedBytecode", "evm.methodIdentifiers"]
-                if compiler_collector.compiler_version >= (0, 4, 4):
-                    output_selection += ["metadata", "evm.deployedBytecode.symbolMap"]
-                ast_selection = ["ast"]
+            output_selection = ["abi", "evm.bytecode", "evm.deployedBytecode", "evm.methodIdentifiers"]
+            if compiler_collector.compiler_version >= (0, 4, 4):
+                output_selection += ["metadata", "evm.deployedBytecode.symbolMap"]
+            ast_selection = ["ast"]
         else:
             # "non-compilable" language so no need to deal with it
             fatal_error(compiler_logger, "Expected only Solidity and Vyper as "
@@ -1817,6 +1839,42 @@ class CertoraBuildGenerator:
                         else:
                             raise Util.CertoraUserInputError(err_msg)
 
+    def _resolve_data_contracts_key(self,
+                                    contract_file: str,
+                                    compile_wd: Path,
+                                    data: Dict[str, Any],
+                                    resolved_to_orig: Optional[Dict[str, str]] = None,
+                                    ) -> str:
+        """Resolve which key in data[CONTRACTS] corresponds to ``contract_file``.
+
+        solc's standard-json output keys files in whatever form solc saw them — relative to
+        compile_wd, absolute, the raw input string, or (for symlinks) a previously seen original.
+        We try each in order and return the matching key. Raises if no form matches.
+
+        ``resolved_to_orig`` is optional: the worklist populates it from base contracts and link
+        references; the pre-worklist seed for the primary file passes ``None``.
+        """
+        contract_file_abs = str(Util.abs_norm_path(contract_file))
+        # using os.path.relpath because Path.relative_to cannot go up the directory tree (no ..)
+        contract_file_rel = os.path.relpath(Path(contract_file_abs), compile_wd)
+
+        build_logger.debug(f"available keys: {data[CONTRACTS].keys()}")
+        if contract_file_rel in data[CONTRACTS]:
+            return contract_file_rel
+        if contract_file_abs in data[CONTRACTS]:
+            return contract_file_abs
+        if contract_file in data[CONTRACTS]:
+            # when does this happen? Saw this in TrustToken on a package source file
+            return contract_file
+        orig = resolved_to_orig.get(contract_file) if resolved_to_orig is not None else None
+        if orig is not None and orig in data[CONTRACTS]:
+            return orig
+        # our file may be a symlink!
+        raise Exception(
+            f"Worklist contains {contract_file} (relative {contract_file_rel}, "
+            f"absolute {contract_file_abs}), resolved from {orig} "
+            f"that does not exist in contract set {orig in data[CONTRACTS] if orig else False}")
+
     def collect_for_file(self,
                          build_arg_contract_file: str,
                          file_index: int,
@@ -1964,6 +2022,12 @@ class CertoraBuildGenerator:
         contracts_with_libraries = {}
         file_compiler_path = compiler_collector.normalize_file_compiler_path_name(file_abs_path)
 
+        # Resolve the data[CONTRACTS] key for the primary file once, before the worklist runs.
+        # This is the (file, *) half of the primary contract-handle set used to scope the bytecode
+        # check inside get_bytecode — see the primary_contract_handles construction just below.
+        primary_file_key = self._resolve_data_contracts_key(str(Path(file_compiler_path)), compile_wd, data)
+        primary_contract_handles: Set[Tuple[str, str]] = {(primary_file_key, n) for n in contracts_in_file}
+
         # But apparently this heavily depends on the Solidity AST format anyway
 
         # Need to add all library dependencies that are in a different file:
@@ -1975,31 +2039,8 @@ class CertoraBuildGenerator:
             contract_file_obj = contracts_to_add_dependencies_queue.pop()
             contract_file = str(contract_file_obj)
             build_logger.debug(f"Processing dependencies from file {contract_file}")
-            # make sure path name is in posix format.
-            contract_file_abs = str(Util.abs_norm_path(contract_file))
-
-            # using os.path.relpath because Path.relative_to cannot go up the directory tree (no ..)
-            contract_file_rel = os.path.relpath(Path(contract_file_abs), compile_wd)
-
-            build_logger.debug(f"available keys: {data['contracts'].keys()}")
-            if contract_file_rel in data[CONTRACTS]:
-                contract_file = contract_file_rel
-                unsorted_contract_list = data[CONTRACTS][contract_file]
-            elif contract_file_abs in data[CONTRACTS]:
-                contract_file = contract_file_abs
-                unsorted_contract_list = data[CONTRACTS][contract_file_abs]
-            elif contract_file in data[CONTRACTS]:
-                # when does this happen? Saw this in TrustToken on a package source file
-                unsorted_contract_list = data[CONTRACTS][contract_file]
-            elif resolved_to_orig.get(contract_file) in data[CONTRACTS]:
-                unsorted_contract_list = data[CONTRACTS][resolved_to_orig[contract_file]]
-                contract_file = resolved_to_orig[contract_file]
-            else:
-                # our file may be a symlink!
-                raise Exception(
-                    f"Worklist contains {contract_file} (relative {contract_file_rel}, "
-                    f"absolute {contract_file_abs}), resolved from {resolved_to_orig.get(contract_file)} "
-                    f"that does not exist in contract set {resolved_to_orig.get(contract_file) in data['contracts']}")
+            contract_file = self._resolve_data_contracts_key(contract_file, compile_wd, data, resolved_to_orig)
+            unsorted_contract_list = data[CONTRACTS][contract_file]
 
             contract_list = sorted([c for c in unsorted_contract_list])
             # every contract file may contain numerous primary contracts, but the dependent contracts
@@ -2103,7 +2144,7 @@ class CertoraBuildGenerator:
                     contracts_with_chosen_addresses,
                     data,
                     report_source_file,
-                    contracts_in_file,
+                    primary_contract_handles,
                     build_arg_contract_file,
                     compiler_collector,
                     compile_wd,
@@ -2186,7 +2227,7 @@ class CertoraBuildGenerator:
     def get_bytecode(self,
                      bytecode_object: Dict[str, Any],
                      contract_name: str,
-                     primary_contracts: List[str],
+                     is_primary: bool,
                      contracts_with_chosen_addresses: List[Tuple[int, Any]],
                      is_deployed_bytecode: bool
                      ) -> str:
@@ -2196,7 +2237,11 @@ class CertoraBuildGenerator:
 
         @param bytecode_object - the output from the Solidity compiler
         @param contract_name - the contract that we are working on
-        @param primary_contracts - the names of the primary contracts we check to have a bytecode
+        @param is_primary - whether (source_file, contract_name) is a primary handle in the current
+            compilation; only primaries are required to have non-empty bytecode. The (file, name)
+            scoping avoids false positives when a transitively-imported abstract contract shares a
+            name with a primary (e.g. local concrete `Proxy` vs OpenZeppelin's abstract `Proxy`).
+            Caller computes membership against the primary_contract_handles set.
         @param contracts_with_chosen_addresses - a list of tuples of addresses and the
             associated contract identifier
         @param is_deployed_bytecode - true if we deal with deployed (runtime) bytecode,
@@ -2219,7 +2264,7 @@ class CertoraBuildGenerator:
                              f"If you need the contract, import the missing library directly and add a dummy usage:\n"
                 orig_msg = str(e)
                 raise Util.CertoraUserInputError(prefix_msg + orig_msg)
-        if contract_name in primary_contracts and len(bytecode) == 0:
+        if is_primary and len(bytecode) == 0:
             msg = f"Contract {contract_name} has no bytecode. " \
                   f"It may be caused because the contract is abstract, " \
                   f"or is missing constructor code. Please check the output of the Solidity compiler."
@@ -2328,7 +2373,7 @@ class CertoraBuildGenerator:
                             contracts_with_chosen_addresses: List[Tuple[int, Any]],
                             data: Dict[str, Any],
                             report_source_file: str,
-                            primary_contracts: List[str],
+                            primary_contract_handles: Set[Tuple[str, str]],
                             build_arg_contract_file: str,
                             compiler_collector_for_contract_file: CompilerCollector,
                             compile_wd: Path,
@@ -2400,12 +2445,14 @@ class CertoraBuildGenerator:
         (srcmap, constructor_srcmap) = self.collect_srcmap(contract_data)
 
         varmap = ""
+        contract_is_primary = (source_code_file, contract_name) in primary_contract_handles
         deployed_bytecode = self.get_bytecode(contract_data["evm"]["deployedBytecode"], contract_name,
-                                              primary_contracts,
+                                              contract_is_primary,
                                               contracts_with_chosen_addresses, True)
         deployed_bytecode = compiler_lang.normalize_deployed_bytecode(
             deployed_bytecode)
-        constructor_bytecode = self.get_bytecode(contract_data["evm"]["bytecode"], contract_name, primary_contracts,
+        constructor_bytecode = self.get_bytecode(contract_data["evm"]["bytecode"], contract_name,
+                                                 contract_is_primary,
                                                  contracts_with_chosen_addresses, False)
         constructor_bytecode = compiler_lang.normalize_deployed_bytecode(
             constructor_bytecode)
@@ -2487,7 +2534,24 @@ class CertoraBuildGenerator:
 
     @staticmethod
     def get_primary_contract_from_sdc(contracts: List[ContractInSDC], primary: str, primary_file: str) -> List[ContractInSDC]:
-        return [x for x in contracts if x.name == primary and Util.abs_norm_path(x.original_file) == Util.abs_norm_path(primary_file)]
+        name_matched = [x for x in contracts if x.name == primary]
+        if not name_matched:
+            return []
+        primary_parts = Path(Util.abs_norm_path(primary_file)).parts
+        best = None
+        best_suffix_len = -1
+        for x in name_matched:
+            x_parts = Path(Util.abs_norm_path(x.original_file)).parts
+            suffix_len = 0
+            for a, b in zip(reversed(primary_parts), reversed(x_parts)):
+                if a == b:
+                    suffix_len += 1
+                else:
+                    break
+            if suffix_len > best_suffix_len:
+                best_suffix_len = suffix_len
+                best = x
+        return [best] if best is not None else []
 
     @staticmethod
     def generate_library_import(file_absolute_path: str, library_name: str) -> str:
@@ -2980,8 +3044,13 @@ class CertoraBuildGenerator:
         corresponding to the namespaced types.
 
         Args:
-            original_file: Path to the Solidity file containing namespaced storage declarations
+            original_file: Path to the Solidity file containing namespaced storage declarations.
+                This may be a (transitivly) imported file rather than a user-specified target.
             ns_storage: Set of tuples (type_name, namespace) for each namespaced storage
+            compiler_version: The compiler version to use, already resolved from target_file
+            target_file: The user-specified file (from conf file) that imported original_file.
+                Used to resolve compilation settings (solc_optimize_map, solc_via_ir_map, etc.)
+                for the temporary harness file, since original_file may not have entries in those maps.
 
         Returns:
             NewStorageInfo: A tuple (fields, types) where:
@@ -3000,8 +3069,24 @@ class CertoraBuildGenerator:
             # directly can cause issues.
             tmp_file.write(f"import \"{original_file}\";\n\n")
             rel_path = os.path.relpath(tmp_file.name, Path.cwd())
-            if self.context.compiler_map:
-                self.context.compiler_map.update({rel_path: compiler_version}, last=False)
+            tmp_abs_path = Util.abs_posix_path(tmp_file.name)
+            # Add the temp file to all map attributes so that map lookups
+            # (solc_optimize_map, solc_via_ir_map, etc.) succeed during compilation.
+            # We resolve values from target_file (a user-specified file in context.file_paths)
+            # rather than original_file (which may be a transitive dependency not in any map).
+            # We store both relative and absolute path keys because different lookup sites
+            # normalize paths differently: get_relevant_compiler uses relative paths,
+            # while _handle_via_ir/_handle_optimize use absolute paths.
+            for map_attr in self.context.app.attr_class.all_map_attrs():
+                map_attr_value = getattr(self.context, map_attr, None)
+                if not map_attr_value:
+                    continue
+                attr_name = map_attr[:-len(Util.MAP_SUFFIX)]
+                target_value = Ctx.get_map_attribute_value(
+                    self.context, Path(target_file), attr_name
+                )
+                if target_value is not None:
+                    map_attr_value.update({rel_path: target_value, tmp_abs_path: target_value}, last=False)
             # Write the harness contract with dummy fields for each namespaced storage
             var_to_slot = storageExtension.write_harness_contract(tmp_file, harness_name, ns_storage)
             tmp_file.flush()

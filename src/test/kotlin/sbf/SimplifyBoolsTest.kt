@@ -42,9 +42,9 @@ class SimplifyBoolsTest {
         val cfg = SbfTestDSL.makeCFG("test1") {
             bb(0) {
 
-                select(r2, Condition(CondOp.EQ, Value.Reg(SbfRegister.R3_ARG), Value.Imm(0UL)), 0, 1)
+                select(r2, Condition(CondOp.EQ, Value.Reg(SbfRegister.R3), Value.Imm(0UL)), 0, 1)
                 r1 = 0
-                select(r1, Condition(CondOp.EQ, Value.Reg(SbfRegister.R3_ARG), Value.Imm(0UL)), 1, 0)
+                select(r1, Condition(CondOp.EQ, Value.Reg(SbfRegister.R3), Value.Imm(0UL)), 1, 0)
                 r3 = 4
                 BinOp.OR(r2,r1)
                 assume(CondOp.NE(r2, 1))
@@ -150,19 +150,18 @@ class SimplifyBoolsTest {
         Assertions.assertEquals(true, numOfLogicalOr(cfg) == 0)
     }
 
-
     @Test
     fun test6() {
         val cfg = SbfTestDSL.makeCFG("test6") {
             bb(0) {
-                select(r2, Condition(CondOp.NE, Value.Reg(SbfRegister.R4_ARG), Value.Imm(0UL)), 0, 1)
-                select(r3, Condition(CondOp.NE, Value.Reg(SbfRegister.R4_ARG), Value.Imm(0UL)), 0, 1)
+                select(r2, Condition(CondOp.NE, Value.Reg(SbfRegister.R4), Value.Imm(0UL)), 0, 1)
+                select(r3, Condition(CondOp.NE, Value.Reg(SbfRegister.R4), Value.Imm(0UL)), 0, 1)
                 BinOp.OR(r2,r3)
-                select(r3, Condition(CondOp.NE, Value.Reg(SbfRegister.R4_ARG), Value.Imm(0UL)), 1, 0)
+                select(r3, Condition(CondOp.NE, Value.Reg(SbfRegister.R4), Value.Imm(0UL)), 1, 0)
                 BinOp.OR(r2,r3)
-                select(r3, Condition(CondOp.NE, Value.Reg(SbfRegister.R4_ARG), Value.Imm(0UL)), 1, 0)
+                select(r3, Condition(CondOp.NE, Value.Reg(SbfRegister.R4), Value.Imm(0UL)), 1, 0)
                 BinOp.OR(r2,r3)
-                select(r1, Condition(CondOp.LE, Value.Reg(SbfRegister.R3_ARG), Value.Reg(SbfRegister.R9)), 0, 1)
+                select(r1, Condition(CondOp.LE, Value.Reg(SbfRegister.R3), Value.Reg(SbfRegister.R9)), 0, 1)
                 BinOp.OR(r2,r1)
                 assume(CondOp.NE(r2, 1))
                 exit()
@@ -173,4 +172,88 @@ class SimplifyBoolsTest {
         println("After transformation\n$cfg")
         Assertions.assertEquals(true, numOfLogicalOr(cfg) == 0)
     }
+
+    @Test
+    fun test7() {
+        val cfg = SbfTestDSL.makeCFG("test7") {
+            bb(0) {
+                CvlrFunctions.CVT_nondet_u64()
+                r1 = r0
+                CvlrFunctions.CVT_nondet_u64()
+                r2 = r0
+                BinOp.OR(r2, r1)
+                BinOp.AND(r2, 1UL)
+                assume(CondOp.EQ(r2, 0))
+                exit()
+            }
+        }
+        println("Before transformation\n$cfg")
+        simplifyBools(cfg)
+        println("After transformation\n$cfg")
+        Assertions.assertEquals(true, numOfLogicalOr(cfg) == 0)
+    }
+
+    /**
+     * ```
+     * r0 = r0 or r3
+     * ...
+     * r1 = r0
+     * r1 = r1 and 1
+     * assume(r1 == 0)
+     * ```
+     **/
+    @Test
+    fun test8() {
+
+        val cfg = SbfTestDSL.makeCFG("test8") {
+            bb(0) {
+                CvlrFunctions.CVT_nondet_u64()
+                r3 = r0
+                CvlrFunctions.CVT_nondet_u64()
+                BinOp.OR(r0, r3)
+                r1 = r0
+                BinOp.AND(r1, 1UL)
+                assume(CondOp.EQ(r1, 0))
+                exit()
+            }
+        }
+        println("Before transformation\n$cfg")
+        simplifyBools(cfg)
+        println("After transformation\n$cfg")
+        Assertions.assertEquals(true, numOfLogicalOr(cfg) == 0)
+    }
+
+    /**
+     * ```
+     * r0 = r0 or r3
+     * ...
+     * r1 = r0
+     * r1 = r1 and 1
+     * assume(r1 == 0)
+     * r4 = r3
+     * ```
+     **/
+    @Test
+    fun test9() {
+        // Transformation not done: r3 (right operand of OR) is not dead after the assume instruction
+        val cfg = SbfTestDSL.makeCFG("test9") {
+            bb(0) {
+                CvlrFunctions.CVT_nondet_u64()
+                r3 = r0
+                CvlrFunctions.CVT_nondet_u64()
+                BinOp.OR(r0, r3)
+                r1 = r0
+                BinOp.AND(r1, 1UL)
+                assume(CondOp.EQ(r1, 0))
+                r4 = r3
+                exit()
+            }
+        }
+        println("Before transformation\n$cfg")
+        simplifyBools(cfg)
+        println("After transformation\n$cfg")
+        Assertions.assertEquals(true, numOfLogicalOr(cfg) == 1)
+    }
 }
+
+

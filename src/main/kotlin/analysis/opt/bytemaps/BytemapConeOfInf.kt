@@ -374,10 +374,21 @@ class BytemapConeOfInf private constructor(
             }
 
             override fun mapDefinition(lhs: TACSymbol.Var, param: TACSymbol.Var, definition: TACExpr) {
-                if (areQueries || !erasableCmd) {
-                    blindlyAdd()
-                } else {
-                    delete("mapDef")
+                when {
+                    !erasableCmd || ptr in mustTakeBytemap ->
+                        blindlyAdd()
+
+                    allQueries[ptr].isNullOrEmpty() ->
+                        delete("mapDef")
+
+                    else -> {
+                        val mapDefSide = allQueries[ptr]!!.map { tf.isQueryInsideMapDefBound(ptr, param, definition, it) }.uniqueOrNull()
+                        when(mapDefSide)  {
+                            true -> replace(TACCmd.Simple.AssigningCmd.AssignHavocCmd(lhs), "mapdef->havoc")
+                            false -> replace(AssignExpCmd(lhs, zeroBytemap), "mapdef->zeroMap")
+                            null -> blindlyAdd()
+                        }
+                    }
                 }
             }
 
@@ -398,3 +409,4 @@ class BytemapConeOfInf private constructor(
     }
 
 }
+

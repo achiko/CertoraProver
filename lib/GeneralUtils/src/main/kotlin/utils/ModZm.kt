@@ -65,7 +65,9 @@ interface ModZm {
 
     fun BigInteger.to2s() =
         when {
-            !inSignedBounds -> throw OutOfBoundsException("$this is cannot be converted to a 2s complement bit-vector of width $bitwidth")
+            !inSignedBounds -> throw OutOfBoundsException(
+                "0x${this.toString(16)} cannot be converted to a 2s complement bit-vector of width $bitwidth"
+            )
             this >= BigInteger.ZERO -> this
             else -> this + modulus
         }
@@ -270,6 +272,14 @@ interface ModZm {
                 ?.let { signExtendFromBit(b, (it + 1) * 8) }
                 ?: throw OutOfBoundsException("in evaluating signExtend($a, $b), $a is out of range")
 
+        /** Gets a ModZm representing the bitwidth of the result of a mod operation. */
+        fun fromMod(modulus: BigInteger) = modulus.log2Exact()?.let { ConcreteModZm(it) }
+
+        /** Gets a ModZm representing the source bitwidth of the EVM-style sign extension operation. */
+        fun fromEvmSignExtend(evmSextSize: BigInteger) =
+            runIf(evmSextSize < 31.toBigInteger()) {
+                ConcreteModZm(8 * (evmSextSize.toInt() + 1))
+            }
     }
 }
 

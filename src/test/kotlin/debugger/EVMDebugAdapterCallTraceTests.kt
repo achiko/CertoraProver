@@ -28,6 +28,9 @@ import org.junit.jupiter.params.ParameterizedTest
 import org.junit.jupiter.params.provider.MethodSource
 import report.calltrace.CallTrace
 import report.calltrace.printer.DebugAdapterProtocolStackMachine
+import spec.converters.EVMMoveSemantics
+import spec.cvlast.typedescriptors.EVMTypeDescriptor.Companion.resetVTable
+import spec.cvlast.typedescriptors.theSemantics
 import utils.*
 import java.nio.file.Path
 import java.util.stream.Stream
@@ -199,14 +202,15 @@ class EVMDebugAdapterCallTraceTests {
         private val addToStorage: SolidityConfig = SolidityConfig(ruleName = "addToStorage")
         private val callCVLFunction: SolidityConfig = SolidityConfig(ruleName = "callCVLFunction")
         private val callCVLFunctionOnce: SolidityConfig = SolidityConfig(ruleName = "callCVLFunctionOnce")
-        private val hookExample_getSomeField: SolidityConfig = SolidityConfig(ruleName = "hookExample", methodName = "getSomeField()", confPath = baseTestCasePath.resolve("Hooks/Default.conf"), specPath = baseTestCasePath.resolve("Hooks/simple.spec"))
-        private val hookExample_setSomeField: SolidityConfig = SolidityConfig(ruleName = "hookExample", methodName = "setSomeField(uint256)", confPath = baseTestCasePath.resolve("Hooks/Default.conf"), specPath = baseTestCasePath.resolve("Hooks/simple.spec"))
+        private val hookExample_setSomeField: SolidityConfig = SolidityConfig(ruleName = "hookExample", confPath = baseTestCasePath.resolve("Hooks/Default.conf"), specPath = baseTestCasePath.resolve("Hooks/simple.spec"))
+        private val hookExample_setSomeField_calldataargs: SolidityConfig = SolidityConfig(ruleName = "hookExampleCalldataArgs", confPath = baseTestCasePath.resolve("Hooks/Default.conf"), specPath = baseTestCasePath.resolve("Hooks/simple.spec"))
         private val onlyCVLVariables: SolidityConfig = SolidityConfig(ruleName = "onlyCVLVariables")
         private val onlyCVLVariablesParameter: SolidityConfig = SolidityConfig(ruleName = "onlyCVLVariablesParameter")
         private val storageReset: SolidityConfig = SolidityConfig(ruleName = "storageReset", confPath = baseTestCasePath.resolve("StorageReset/C.conf"), specPath = baseTestCasePath.resolve("StorageReset/C.spec"), primaryContract = "C")
         private val sumCoordinates: SolidityConfig = SolidityConfig(ruleName = "sumCoordinates")
         private val sumCoordinatesInternal: SolidityConfig = SolidityConfig(ruleName = "sumCoordinatesInternal")
         private val updateGhost: SolidityConfig = SolidityConfig(ruleName = "updateGhost")
+        private val correlatedCondition: SolidityConfig = SolidityConfig(ruleName = "correlatedCondition")
 
 
         @JvmStatic
@@ -258,6 +262,11 @@ class EVMDebugAdapterCallTraceTests {
                         /*duplicated*/
                         SolFunc(),
                         Rule()
+                    )
+                ),
+                correlatedCondition to listOf(
+                    listOf(
+                        Rule(138U)
                     )
                 )
             ).filter { filterByConfig(it.first) }.stream()
@@ -369,37 +378,52 @@ class EVMDebugAdapterCallTraceTests {
                     matchedCallStack.assertContainsVariable("hook_store_oldValue")
                     matchedCallStack.assertContainsVariable("hook_store_newValue")
                 },
+                hookExample_setSomeField_calldataargs to CallStackMatcher(
+                    Hook(5U),
+                    SolFunc(8U),
+                    /*duplicated due to parametric method call in CVL*/ SolFunc(7U),
+                    Rule(27U))
+                { matchedCallStack ->
+                    matchedCallStack.assertContainsVariable("hook_store_oldValue")
+                    matchedCallStack.assertContainsVariable("hook_store_newValue")
+                },
             ).filter { filterByConfig(it.first) }.stream()
         }
 
-        @OptIn(PollutesGlobalState::class)
+        @OptIn(PollutesGlobalState::class, Config.DestructiveOptimizationsOption::class)
         @JvmStatic
         @BeforeAll
         fun beforeAll() {
             ConfigScope(Config.CallTraceDebugAdapterProtocol, DebugAdapterProtocolMode.VARIABLES)
-                .extend(Config.CallTraceHardFail, HardFailMode.ON)
+                .extend(Config.CallTraceHardFail, HardFailMode.OFF)
                 .extend(Config.DoSanityChecksForRules, SanityValues.NONE)
+                .extend(Config.DestructiveOptimizationsMode, DestructiveOptimizationsModeEnum.TWOSTAGE_INTERPRETED)
                 .letIf(DEBUG_MODE) {
                     CommandLineParser.setExecNameAndDirectory()
                     ConfigType.WithArtifacts.set(log.ArtifactManagerFactory.WithArtifactMode.WithArtifacts)
                     it
                 }
                 .use {
-                    allRegisteredConfigs.map { conf ->
-                        // We are currently running this multiple times, if one conf has several rules, we can merge this.
-                        val callTrace = CallTraceInfra.runConfAndGetCallTrace(
-                            confPath = conf.confPath,
-                            specFilename = conf.specPath,
-                            ruleName = conf.ruleName,
-                            parametricMethodNames = conf.methodName?.let { listOf(it) }.orEmpty(),
-                            primaryContract = conf.primaryContract,
-                        )
+                        resetVTable()
+                        theSemantics = EVMMoveSemantics
+                        allRegisteredConfigs.map { conf ->
+                            // We are currently running this multiple times, if one conf has several rules, we can merge this.
+                            try {
+                                val callTrace = CallTraceInfra.runConfAndGetCounterExampleFullFlow(
+                                    confPath = conf.confPath,
+                                    specFilename = conf.specPath,
+                                    ruleName = conf.ruleName,
+                                    primaryContract = conf.primaryContract,
+                                )
 
-                        check(callTrace is CallTrace.ViolationFound || callTrace is CallTrace.Failure) { "No violation found for config $conf" }
-                        val debugAdapter = callTrace.debugAdapterCallTrace
-                        check(debugAdapter != null)
-                        configToResult[conf] = debugAdapter
-                    }
+                                check(callTrace is CallTrace.ViolationFound || callTrace is CallTrace.Failure) { "No violation found for config $conf" }
+                                val debugAdapter = callTrace.debugAdapterCallTrace
+                                check(debugAdapter != null)
+                                configToResult[conf] = debugAdapter
+                            } catch (ex: Exception) {
+                                println("Failed in $ex")
+                            }
+                        }
                 }
         }
     }

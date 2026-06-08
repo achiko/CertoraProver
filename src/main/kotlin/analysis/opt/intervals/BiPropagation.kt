@@ -290,28 +290,37 @@ object BiPropagation {
             }
         }
 
+    private fun bwAndPiece(lhs: S, x: Interval, y: Interval) =
+        when {
+            lhs.isEmpty() -> empty(3)
+            // these cases are when the bwAnd is actually a no-op, e.g., in the first case:
+            //    lhs = 0xffff & y
+            // and `y` is known to be smaller than `0xffff`. In such a case, `lhs` is actually equal to `y`.
+            x.isConst && x.asConst.isPowOf2Minus1 && y containedIn Interval(BigInteger.ZERO, x.asConst) ->
+                (lhs intersect S(y)).let { listOf(it, S(x), it) }
+
+            y.isConst && y.asConst.isPowOf2Minus1 && x containedIn Interval(BigInteger.ZERO, y.asConst) ->
+                (lhs intersect S(x)).let { listOf(it, it, S(y)) }
+
+            else -> {
+                val newX = x intersect Interval(lhs.min, Inf)
+                val newY = y intersect Interval(lhs.min, Inf)
+                listOf(lhs, S(newX), S(newY))
+            }
+        }
 
     /** [lhs] := [x] & [y] */
     fun bwAnd(lhs: S, x: S, y: S) =
         if (x.isBool && y.isBool) {
             and(listOf(lhs intersect SFullBool, x, y))
         } else {
-            val newLhs = lhs intersect (x bwAnd y)
-            when {
-                newLhs.isEmpty() -> empty(3)
-                // these cases are when the bwAnd is actually a no-op, e.g., in the first case:
-                //    lhs = 0xffff & y
-                // and `y` is known to be smaller than `0xffff`. In such a case, `lhs` is actually equal to `y`.
-                x.isConst && x.asConst.isPowOf2Minus1 && y containedIn S(BigInteger.ZERO, x.asConst) ->
-                    (newLhs intersect y).let { listOf(it, x, it) }
-                y.isConst && y.asConst.isPowOf2Minus1 && x containedIn S(BigInteger.ZERO, y.asConst) ->
-                    (newLhs intersect x).let { listOf(it, it, y) }
-                else -> {
-                    val newX = x intersect S(newLhs.min, Inf)
-                    val newY = y intersect S(newLhs.min, Inf)
-                    listOf(newLhs, newX, newY)
+            val triplets =
+                x.flatMap { xPiece ->
+                    y.map { yPiece ->
+                        bwAndPiece(lhs intersect S(xPiece bwAnd yPiece), xPiece, yPiece)
+                    }
                 }
-            }
+            List(3) { i -> unionOf(triplets.map { it[i] }) }
         }
 
 

@@ -12,10 +12,18 @@ hook Sload uint256 hook_load_value currentContract.someField {
     }
 }
 
-rule hookExample(method f) {
+rule hookExample() {
+    hookAccessed = false;
+    env e;
+    uint x;
+    setSomeField(e, x);
+    assert !hookAccessed;
+}
+
+rule hookExampleCalldataArgs() {
     hookAccessed = false;
     env e;
     calldataarg args;
-    f(e, args);
+    setSomeField(e, args);
     assert !hookAccessed;
 }

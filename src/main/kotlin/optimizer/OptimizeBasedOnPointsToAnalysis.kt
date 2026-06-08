@@ -921,9 +921,6 @@ object OptimizeBasedOnPointsToAnalysis {
                             "Invariant broken: singleton long read has multiple reads! $it -> ${it.cmd.accesses}"
                         }
                         when(it.cmd) {
-                            is TACCmd.Simple.LogCmd -> {
-                                singleLongRead(logSet)
-                            }
                             is TACCmd.Simple.RevertCmd -> {
                                 singleLongRead(revertSet)
                             }
@@ -966,6 +963,18 @@ object OptimizeBasedOnPointsToAnalysis {
                                     singleLongRead(field)
                                 }
 
+                            }
+                            is TACCmd.Simple.LogCmd -> {
+                                val len = it.cmd.args[1]
+                                if(len is TACSymbol.Const && len.value == BigInteger.ZERO) {
+                                    singleLongRead(logSet)
+                                } else {
+                                    singleLongRead(
+                                        pta.fieldNodesAt(
+                                            it.ptr, it.cmd.args[0] as? TACSymbol.Var ?: return@result null
+                                        )
+                                    )
+                                }
                             }
                             is TACCmd.Simple.ReturnCmd -> {
                                 if(it.cmd.o2 is TACSymbol.Const && it.cmd.o2.value == BigInteger.ZERO) {

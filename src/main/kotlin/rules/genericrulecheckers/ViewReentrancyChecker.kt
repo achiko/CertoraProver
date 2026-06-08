@@ -134,7 +134,4 @@ data object ViewReentrancyChecker : BuiltInRuleCustomChecker<ViewReentrancyGener
             ).also { ruleChecker.treeViewReporter.signalEnd(rule, it) }
         }
     }
-
-    override val functionSetCanBeEmpty = true
-
 }

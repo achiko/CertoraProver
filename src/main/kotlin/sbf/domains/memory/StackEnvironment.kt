@@ -33,12 +33,22 @@ interface StackEnvironmentValue<Value> {
 
 class StackEnvironmentError(msg: String): SolanaInternalError("StackEnvironment error:$msg")
 
-data class ByteRange(val offset: Long, val width: Byte)
+data class ByteRange(val offset: Long, val width: Byte) : Comparable<ByteRange> {
+    init {
+        val widthI = width.toInt()
+        check(widthI == 1 || widthI == 2 || widthI == 4 || widthI == 8)
+    }
+
+    override fun compareTo(other: ByteRange): Int {
+        val cmp = offset.compareTo(other.offset)
+        return if (cmp != 0) { cmp } else { width.compareTo(other.width) }
+    }
+}
 
 /** An immutable environment map for stack slots **/
 class StackEnvironment<Value: StackEnvironmentValue<Value>>(
-    /** A map entry ((offset, width), value)) represents that
-     * the consecutive bytes [offset,...,offset+width) has the value @value
+    /** A map entry `(offset, width) -> value` represents that
+     * the consecutive bytes `[offset,...,offset+width)` has the value `value`
      *
      * **Very importantly**, this class does not check that overlap entries are mapped to consistent values.
      * If this is important then the client must ensure that.
@@ -92,13 +102,35 @@ class StackEnvironment<Value: StackEnvironmentValue<Value>>(
      *
      * See [overlap] to see the meaning of [onlyPartial]
      */
-    @Suppress("ForbiddenComment")
-    // TODO(PERFORMANCE): calling filter is expensive.
     fun inRange(start: Long, len: Long, onlyPartial: Boolean): Map<ByteRange, Value>  {
         if (isBottom()) {
             throw StackEnvironmentError("cannot call inRange on bottom")
         }
-        return map.filter { overlap(it.key, start, len, onlyPartial )}
+        // An entry (offset, width) overlaps [start, start+len) only if:
+        //   (a) offset + width > start  (the entry reaches into or past the start)
+        //   (b) offset < start + len    (the entry starts before the end)
+        //
+        // From (a): offset > start - width >= start - 8  (since width <= 8)
+        //           i.e. offset >= start - 7
+        //
+        // At offset = start - 8, even the maximum width 8 only reaches start (not strictly
+        // greater), so no overlap is possible. At offset = start - 7 with width = 8 the
+        // entry reaches start + 1, so overlap is possible.
+        //
+        // We probe with width = 1 (the minimum valid width) so that ceilingEntry returns
+        // the very first stored entry at offset = start - 7 (since 1 <= 2 <= 4 <= 8).
+        //
+        // Use ceilingEntry/higherEntry to iterate only over candidates in O(k log n).
+        val lowerBound = ByteRange(start - 7, 1)
+        val result = linkedMapOf<ByteRange, Value>()
+        var entry = map.ceilingEntry(lowerBound)
+        while (entry != null && entry.key.offset < start + len) {
+            if (overlap(entry.key, start, len, onlyPartial)) {
+                result[entry.key] = entry.value
+            }
+            entry = map.higherEntry(entry.key)
+        }
+        return result
     }
 
     fun remove(bytes: ByteRange): StackEnvironment<Value> {
@@ -106,6 +138,56 @@ class StackEnvironment<Value: StackEnvironmentValue<Value>>(
             throw StackEnvironmentError("cannot remove on bottom")
         }
         return StackEnvironment(map.remove(bytes))
+    }
+
+    /**
+     * Remove all entries with `offset > threshold` in O(k log n),
+     * where k is the number of removed entries.
+     *
+     * Starts at the first entry above the threshold via [ceilingEntry] and
+     * steps forward with [higherEntry], so live entries (offset <= threshold)
+     * are never visited.
+     */
+    fun removeAbove(threshold: Long): StackEnvironment<Value> {
+        if (isBottom()) {
+            throw StackEnvironmentError("cannot removeAbove on bottom")
+        }
+        // ByteRange(threshold + 1, 1) is the smallest valid key with offset > threshold.
+        var entry = map.ceilingEntry(ByteRange(threshold + 1, 1))
+        if (entry == null) {
+            return this
+        }
+        var newMap = map
+        while (entry != null) {
+            newMap = newMap.remove(entry.key)
+            entry = map.higherEntry(entry.key)
+        }
+        return StackEnvironment(newMap)
+    }
+
+    /**
+     * Remove all entries with `offset < threshold` in O(k log n),
+     * where k is the number of removed entries.
+     *
+     * Starts at the last entry below the threshold via [lowerEntry] and
+     * steps backward, so live entries (offset >= threshold) are never visited.
+     */
+    fun removeBelow(threshold: Long): StackEnvironment<Value> {
+        if (isBottom()) {
+            throw StackEnvironmentError("cannot removeBelow on bottom")
+        }
+        // ByteRange(threshold, 1) is the smallest valid key with offset = threshold,
+        // so lowerEntry gives the last entry with offset < threshold.
+        var entry = map.lowerEntry(ByteRange(threshold, 1))
+        if (entry == null) {
+            return this
+        }
+        var newMap = map
+        while (entry != null) {
+            newMap = newMap.remove(entry.key)
+            entry = map.lowerEntry(entry.key)
+        }
+        return StackEnvironment(newMap)
     }
 
     fun put(bytes: ByteRange, value: Value, isWeak: Boolean = false): StackEnvironment<Value> {
@@ -145,37 +227,22 @@ class StackEnvironment<Value: StackEnvironmentValue<Value>>(
     private fun joinOrWiden(other: StackEnvironment<Value>, isJoin: Boolean): StackEnvironment<Value> {
         if (isBottom() || other.isTop()) {
             return other
-        } else if (other.isTop() || isTop()) {
+        } else if (other.isBottom() || isTop()) {
             return this
         } else {
-            val leftMap = map
-            val rightMap = other.map
-            val topEntries = mutableSetOf<ByteRange>()
-            var outMap = leftMap.merge(rightMap) { (offset,width), leftVal, rightVal ->
-                check(!(leftVal == null && rightVal == null)) {"cannot join two null values"}
-                if (leftVal == null) {
-                    @Suppress("ForbiddenComment")
-                    // TODO(PERFORMANCE): adding a top value is wasteful because there is no point to keep it in
-                    //  the map. However, the merger function must return a non-null value. It would be more
-                    //  efficient to allow adding null or other sentinel value so that no entry is added as a
-                    //  result of the merge.
-                    topEntries.add(ByteRange(offset, width))
-                    rightVal!!.mkTop()
-                } else if (rightVal == null) {
-                    // See comment above
-                    topEntries.add(ByteRange(offset, width))
-                    leftVal.mkTop()
+            // A key present in only one map implicitly has top in the other, so its
+            // join/widen is top and should not be stored. MergeMode.INTERSECTION handles
+            // this automatically: the merger is only called for keys present in both maps,
+            // so one-sided keys are dropped without allocating or post-processing.
+            // Returning null from the merger drops entries that merge to top.
+            val outMap = map.merge(other.map, TreapMap.MergeMode.INTERSECTION) { _, leftVal, rightVal ->
+                val merged = if (isJoin) {
+                    leftVal!!.join(rightVal!!)
                 } else {
-                    if (isJoin) {
-                            leftVal.join(rightVal)
-                    } else {
-                            leftVal.widen(rightVal)
-                    }
+                    leftVal!!.widen(rightVal!!)
                 }
+                merged.takeIf { !it.isTop() }
             }
-
-            // Finally, remove all top entries added above
-            outMap -= topEntries
             return StackEnvironment(outMap)
         }
     }

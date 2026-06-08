@@ -75,9 +75,14 @@ object JumpLeNormalizer {
                     patcher.insertAfter(
                         lcmd.ptr,
                         listOf(
-                            lcmd.cmd.copy(
-                                lhs = tempVar,
-                                rhs = build(lcmd.exp.o2, lcmd.exp.o1)
+                            /**
+                             * We explicitly do not use a copy here, as we do not want to keep the meta.
+                             * In particular, we cannot keep the meta [rules.TWOSTAGE_META_VARORIGIN] on tempVar
+                             * as the result is flipped.
+                             */
+                            TACCmd.Simple.AssigningCmd.AssignExpCmd(
+                                tempVar,
+                                build(lcmd.exp.o2, lcmd.exp.o1)
                             )
                         )
                     )

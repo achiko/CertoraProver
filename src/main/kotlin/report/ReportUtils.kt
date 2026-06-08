@@ -117,7 +117,6 @@ fun List<RuleCheckResult>.anyDiagnosticErrors(): Boolean =
     }
 
 private fun RuleCheckResult.Single.RuleCheckInfo.WithExamplesData.anyDiagnosticErrors(): Boolean = examples.any {
-    it.assertSlice.isFailure ||
         it.callResolutionExampleMeta.isFailure ||
         it.details.isFailure ||
         it.callTrace is CallTrace.Failure

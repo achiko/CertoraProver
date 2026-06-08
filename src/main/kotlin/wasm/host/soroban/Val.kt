@@ -352,9 +352,9 @@ object Val {
             val tagArray = validTags.map { tagInt -> Tag.entries.first { it.value == tagInt } }.toTypedArray()
             val checkValid = getTag(v.asSym()).letVar { tag ->
                 assign(out) {
-                    (v lt BigInteger.TWO.pow(64).asTACExpr) and
-                        checkValidTag(tag, tagArray) and
-                        checkInt32Range(tag, v.asSym(), tagArray)
+                    ((v lt BigInteger.TWO.pow(64).asTACExpr) and checkValidTag(tag, tagArray)).letIf(!tagArray.isEmpty()) {
+                        it and checkInt32Range(tag, v.asSym(), tagArray)
+                    }
                 }
             }
             return if (checkAlloc) {

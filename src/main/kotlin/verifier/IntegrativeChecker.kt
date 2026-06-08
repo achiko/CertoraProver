@@ -33,7 +33,7 @@ import config.Config.IsAssumeUnwindCondForLoops
 import config.Config.LoopUnrollConstant
 import datastructures.LinkedArrayHashMap
 import datastructures.stdcollections.*
-import icfg.ContractStorageResolver
+import icfg.StorageLinkResolver
 import instrumentation.ImmutableInstrumenter
 import instrumentation.StoragePathAnnotation
 import instrumentation.StorageReadInstrumenter
@@ -123,7 +123,11 @@ object IntegrativeChecker {
         var query = specSource.getQuery(contractSource.instances(), cvlScene)
             .resultOrExitProcess(1, CVLError::printErrors)
 
-        val scene = SceneFactory.getScene(contractSource, SceneType.PROVER, (query as? ProverQuery.CVLQuery.Single)?.cvl)
+        val cvl = (query as? ProverQuery.CVLQuery.Single)?.cvl
+        val scene = SceneFactory.getScene(contractSource, SceneType.PROVER, cvl)
+        if (cvl != null && cvl.linkEntries.isNotEmpty()) {
+            spec.attachSpecLinks(scene, cvl, contractSource.instances())
+        }
         query = query.copyWithFilteredCVLRules(scene)
         // some prints that we may decide to get rid of in the future
         logSceneInfo(scene)
@@ -472,12 +476,13 @@ object IntegrativeChecker {
                         MethodToCoreTACTransformer(
                             ReportTypes.STORAGE_ADDRESS_RESOLUTION
                         ) { m ->
-                            ContractStorageResolver.resolve(m)
+                            StorageLinkResolver.resolve(m)
                         }
                     )
                 )
             )
         }
+
         if (Config.AssumeDeadStorageIsZero.get()) {
             instrumentStorageAssumption(scene)
         }

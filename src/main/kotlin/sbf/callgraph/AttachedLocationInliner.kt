@@ -17,33 +17,60 @@
 
 package sbf.callgraph
 
+import compiler.toHeuristicSourceSegment
 import datastructures.stdcollections.*
-import sbf.analysis.AdaptiveScalarAnalysis
+import sbf.SolanaConfig
 import sbf.analysis.AnalysisRegisterTypes
+import sbf.analysis.GenericScalarAnalysis
 import sbf.analysis.IRegisterTypes
 import sbf.cfg.*
 import sbf.disassembler.Label
+import sbf.domains.ConstantSet
+import sbf.domains.ConstantSetSbfTypeFactory
 import sbf.domains.INumValue
 import sbf.domains.IOffset
 import sbf.domains.MemorySummaries
+import sbf.domains.ScalarStackStridePredicateDomainFactory
+import sbf.sbfLogger
+import sbf.support.SolanaError
+import sbf.support.SolanaInternalError
 import sbf.tac.Calltrace.getFilepathAndLineNumber
 import utils.Range
 import utils.SourcePosition
 import utils.checkedMinus
+import utils.letIf
+import kotlin.toULong
+
+private const val warnMsg = "inlineAttachedLocations skipped due to some error in the scalar analysis.\nHere more details about the error:\n"
 
 fun inlineAttachedLocations(
     prog: SbfCallGraph,
     memSummaries: MemorySummaries,
 ): SbfCallGraph {
-    val scalarAnalysis = AdaptiveScalarAnalysis(
+    // The scalar analysis needs to be precise on the stack to avoid throwing exceptions.
+    // We use ConstantSet to model pointer offsets and the ScalarStackSTridePredicateDomain.
+    val scalarAnalysis = GenericScalarAnalysis(
         prog.getCallGraphRootSingleOrFail(),
         prog.getGlobals(),
-        memSummaries
+        memSummaries,
+        ConstantSetSbfTypeFactory(SolanaConfig.ScalarMaxVals.get().toULong()),
+        ScalarStackStridePredicateDomainFactory<ConstantSet, ConstantSet>()
     )
+
     val types = AnalysisRegisterTypes(scalarAnalysis)
     return prog.transformSingleEntry { cfg ->
         val cfgMut = cfg.clone(cfg.getName())
-        AttachedLocationInliner(types).run(cfgMut)
+        val onError: (Exception) -> SbfCFG = { e ->
+            sbfLogger.warn { "$warnMsg$e" }
+            cfgMut
+        }
+        try {
+            AttachedLocationInliner(types).run(cfgMut)
+        } catch (e: SolanaError) {
+            onError(e)
+        } catch (e: SolanaInternalError) {
+            onError(e)
+        }
     }
 }
 
@@ -94,7 +121,12 @@ private class AttachedLocationInliner<TNum : INumValue<TNum>, TOffset : IOffset<
         val rangeMeta = rangeFromStack(attachedLocationStack, collector)
             ?: return
 
-        val newMeta = locInst.inst.metaData.plus(rangeMeta)
+        val sourceSegment = rangeMeta.second.toHeuristicSourceSegment()
+        val newMeta = locInst.inst.metaData
+            .plus(rangeMeta)
+            .letIf(sourceSegment != null){
+                it.plus(SbfMeta.SOURCE_SEGMENT to sourceSegment!!)
+            }
         val newInst = locInst.inst.copyInst(newMeta)
 
         collector.markChangeTo(locInst, listOf(newInst))

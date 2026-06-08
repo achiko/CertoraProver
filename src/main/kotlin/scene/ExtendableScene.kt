@@ -146,6 +146,7 @@ interface ExtendableScene {
             constructorCode = this.constructorMethod!!,
             storageInfoField = this.storage,
             transientStorageInfoField = this.transientStorage,
+            resolvedLinksField = this.resolvedLinks,
             wholeCode = this.wholeContractMethod
         )
     }

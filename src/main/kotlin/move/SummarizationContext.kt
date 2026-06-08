@@ -113,7 +113,7 @@ class SummarizationContext(
     }
 
     /** Havoc the given symbol once at the start of the TAC program.  */
-    fun TACSymbol.Var.ensureHavocInit(type: MoveType? = null): TACSymbol.Var =
+    fun TACSymbol.Var.ensureHavocInit(type: MoveType.Value? = null): TACSymbol.Var =
         apply { ensureInit(HavocInitializer(this, type)) }
 
     fun getAndResetInitialization() =
@@ -132,7 +132,7 @@ class SummarizationContext(
         abstract fun initialize(): MoveCmdsWithDecls
     }
 
-    private data class HavocInitializer(val sym: TACSymbol.Var, val type: MoveType?) : Initializer() {
+    private data class HavocInitializer(val sym: TACSymbol.Var, val type: MoveType.Value?) : Initializer() {
         override fun initialize() = type?.assignHavoc(sym) ?: assignHavoc(sym)
     }
 }

@@ -147,7 +147,11 @@ class DefaultInstructionListener<T>: InstructionListener<T> {
 /** Operations to query scalar values from a scalar domain  **/
 interface ScalarValueProvider<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>> {
     fun getAsScalarValue(value: Value): ScalarValue<TNum, TOffset>
+    /** Return the scalar value stored in the stack bytes `[offset, offset+width-1]` **/
     fun getStackContent(offset: Long, width: Byte): ScalarValue<TNum, TOffset>
+    /** Return false if no bytes in `[offset, offset+size-1]` has ever been written on the stack **/
+    fun mayStackBeInitialized(offset: Long, size: ULong): Boolean
+    fun getTypeFac(): ISbfTypeFactory<TNum, TOffset>
 }
 
 /**
@@ -158,6 +162,7 @@ interface MutableScalarValueUpdater<TNum: INumValue<TNum>, TOffset: IOffset<TOff
     fun setScalarValue(reg: Value.Reg, newVal: ScalarValue<TNum, TOffset>)
     fun setStackContent(offset: Long, width: Byte, value: ScalarValue<TNum, TOffset>)
 }
+
 
 /** Special operations that [MemoryDomain] needs from the scalar domain **/
 interface MemoryDomainScalarOps<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>> {

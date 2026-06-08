@@ -1,0 +1,7 @@
+{
+  "assertMessages": {},
+  "rules": {
+      "rule_is_written_two_of_three": "SUCCESS",
+      "rule_is_written_two_of_three_fail": "FAIL"
+  }
+}

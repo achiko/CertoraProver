@@ -32,17 +32,14 @@ sealed class TACAllocator {
      */
 
     context(SbfCFGToTAC<TNum, TOffset, TFlags>)
-    protected fun <TNum : INumValue<TNum>, TOffset : IOffset<TOffset>, TFlags: IPTANodeFlags<TFlags>> mkEq(
+    internal fun <TNum : INumValue<TNum>, TOffset : IOffset<TOffset>, TFlags: IPTANodeFlags<TFlags>> mkEq(
         ptr: TACSymbol.Var, address: ULong, useTACAssume:Boolean
     ): List<TACCmd.Simple> {
         return if (useTACAssume) {
             val b = vFac.mkFreshBoolVar()
-            listOf(
-                assign(b, exprBuilder.mkBinRelExp(CondOp.EQ, ptr.asSym() , address.toLong())),
-                TACCmd.Simple.AssumeCmd(b, "mkEq")
-            )
+            listOf(assign(b, CondOp.EQ(ptr.asSym() , address.toLong(), sbfTacB))) + assume(b.asSym(), "mkEq")
         } else {
-            listOf(assign(ptr, exprBuilder.mkConst(Value.Imm(address)).asSym()))
+            listOf(assign(ptr, sbfTacB.mkConst(Value.Imm(address)).asSym()))
         }
     }
 }
@@ -69,7 +66,7 @@ class TACBumpAllocator(val name:String, val start: ULong, val end: ULong): TACAl
      *   Emit TAC code that ensures [ptr] is equal to the bump pointer.
      */
     context(SbfCFGToTAC<TNum, TOffset, TFlags>)
-    fun <TNum : INumValue<TNum>, TOffset : IOffset<TOffset>, TFlags: IPTANodeFlags<TFlags>> alloc(
+    internal fun <TNum : INumValue<TNum>, TOffset : IOffset<TOffset>, TFlags: IPTANodeFlags<TFlags>> alloc(
         ptr: TACSymbol.Var, size: ULong, useTACAssume:Boolean = false
     ): List<TACCmd.Simple> {
         val nextAddress = next(size)
@@ -97,7 +94,7 @@ class TACFixedSizeBlockAllocator(val name:String, val start:ULong, private val m
      *   Emit TAC code that ensures [ptr] is equal to the start address of a new allocated block.
      */
     context(SbfCFGToTAC<TNum, TOffset, TFlags>)
-    fun <TNum : INumValue<TNum>, TOffset : IOffset<TOffset>, TFlags: IPTANodeFlags<TFlags>> alloc(
+    internal fun <TNum : INumValue<TNum>, TOffset : IOffset<TOffset>, TFlags: IPTANodeFlags<TFlags>> alloc(
         ptr: TACSymbol.Var, size: Long, useTACAssume:Boolean = false
     ): List<TACCmd.Simple> {
         if (size <= 0) {

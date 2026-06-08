@@ -59,16 +59,14 @@ internal open class CvlrCallTraceGenerator(
                                         snippetCmd,
                                         cmd
                                     )
-
+                                    is SnippetCmd.CvlrSnippetCmd.PrintPubkey -> handleCvlrPrintPubkey(snippetCmd, cmd)
                                     is SnippetCmd.CvlrSnippetCmd.CexPrintTag -> handleCvlrCexPrintTag(snippetCmd, cmd)
                                     is SnippetCmd.CvlrSnippetCmd.CexAttachLocation -> handleCvlrCexAttachLocation(
                                         snippetCmd
                                     )
-
                                     is SnippetCmd.CvlrSnippetCmd.CexPrintLocation -> handleCvlrCexPrintLocation(
                                         snippetCmd,
                                     )
-
                                     is SnippetCmd.CvlrSnippetCmd.ScopeStart -> handleCvlrScopeStart(snippetCmd, cmd)
                                     is SnippetCmd.CvlrSnippetCmd.ScopeEnd -> handleCvlrScopeEnd(snippetCmd)
                                 }
@@ -145,6 +143,19 @@ internal open class CvlrCallTraceGenerator(
         return HandleCmdResult.Continue
     }
 
+    private fun handleCvlrPrintPubkey(
+        snippetCmd: SnippetCmd.CvlrSnippetCmd.PrintPubkey,
+        stmt: TACCmd.Simple.AnnotationCmd,
+    ): HandleCmdResult {
+        val range = resolveAttachedLocation(stmt)
+        val formatted = snippetCmd.tryToSarif(model)
+        if (formatted != null) {
+            callTraceAppend(CallInstance.CvlrCexPrintValues(formatted, range))
+        } else {
+            cvlrLogger.warn { "cannot infer value of ${snippetCmd.w0}:${snippetCmd.w1}:${snippetCmd.w2}:${snippetCmd.w3}  to print the pubkey" }
+        }
+        return HandleCmdResult.Continue
+    }
 
     private fun handleCvlrCexPrint128BitsValue(
         snippetCmd: SnippetCmd.CvlrSnippetCmd.CexPrint128BitsValue,

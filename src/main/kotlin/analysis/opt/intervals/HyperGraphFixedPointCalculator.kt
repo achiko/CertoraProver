@@ -17,9 +17,9 @@
 
 package analysis.opt.intervals
 
-import datastructures.add
-import datastructures.mutableMultiMapOf
+import datastructures.*
 import datastructures.stdcollections.*
+import java.util.TreeSet
 import log.*
 import org.jetbrains.annotations.TestOnly
 import utils.*
@@ -43,7 +43,7 @@ private val logger = Logger(LoggerTypes.INTERVALS_SIMPLIFIER)
  *
  * We can improve efficiency a bit by allowing edges to say if they surely didn't change a vertex.
  */
-class HyperGraphFixedPointCalculator<V, T>(
+class HyperGraphFixedPointCalculator<V, T : Any>(
     private val defaultValue: (V) -> T,
     /**
      * Activated before saving a value related to a vertex. It takes the vertex, the old value, and the new calculated
@@ -57,16 +57,19 @@ class HyperGraphFixedPointCalculator<V, T>(
     private inner class Edge(
         val vertices: List<V>,
         val func: (List<T>) -> List<T>,
-        val name: String
-    ) {
+        val name: String,
+        /** For ordering the edges in the work queue; edges that are added to the graph earlier come first */
+        private val ordinal: Int
+    ) : Comparable<Edge> {
         override fun toString() = name
+        override fun compareTo(other: Edge) = ordinal.compareTo(other.ordinal)
     }
 
     private val vertexToEdges = mutableMultiMapOf<V, Edge>()
     private val allEdges = mutableSetOf<Edge>()
 
     fun addEdge(vertices: List<V>, func: (List<T>) -> List<T>, name: String) {
-        val e = Edge(vertices, func, name)
+        val e = Edge(vertices, func, name, ordinal = allEdges.size)
         allEdges += e
         for (v in vertices) {
             vertexToEdges.add(v, e)
@@ -77,17 +80,29 @@ class HyperGraphFixedPointCalculator<V, T>(
         addEdge(listOf(v1, v2), { l -> func(l[0], l[1]) }, name)
     }
 
-    inner class State(private val vals: MutableMap<V, T> = mutableMapOf()) {
-        fun get(v: V) = vals[v] ?: defaultValue(v)
-        fun getOrNull(v: V) = vals[v]
+    /**
+        To reduce the number of map lookups, we store the values in a mutable [Box] (so that we can get the current
+        value and also update it with a single map lookup).
+     */
+    private class Box<T>(var t: T) {
+        override fun toString() = "$t"
+    }
 
+    inner class State private constructor(private val vals: ArrayHashMap<V, Box<T>>) {
+        constructor() : this(ArrayHashMap(loadFactor = 1f))
+
+        fun get(v: V) = vals[v]?.t ?: defaultValue(v)
+        fun getOrNull(v: V) = vals[v]?.t
         fun set(v: V, t: T) {
-            vals[v] = normalize(v, get(v), t)
+            val box = vals.computeIfAbsent(v) { Box(defaultValue(it)) }
+            box.t = normalize(v, box.t, t)
         }
 
         val vertices: Set<V> = vals.keys
 
-        fun duplicate() = State(vals.toMutableMap())
+        fun duplicate() = State(
+            vals.mapValuesTo(ArrayHashMap(vals.size, vals.loadFactor)) { (_, b) -> Box(b.t) }
+        )
 
         /**
          * [startWith] is the set of vertices we consider "changed" when we start, i.e., any edge that contains them
@@ -97,25 +112,29 @@ class HyperGraphFixedPointCalculator<V, T>(
             if (allEdges.isEmpty()) {
                 return
             }
-            val queue: MutableSet<Edge> = startWith
-                ?.flatMapToSet { vertexToEdges[it].orEmpty() }
-                ?: allEdges.toMutableSet()
+
+            // We use a TreeSet as a queue to get the edges in the order they were added to the graph.
+            val queue: TreeSet<Edge> = startWith
+                ?.flatMapTo(TreeSet()) { vertexToEdges[it].orEmpty() }
+                ?: TreeSet(allEdges)
 
             var count = 0
             val maxCount = allEdges.size * maxFactor
-            while (queue.isNotEmpty()) {
+            var e = queue.firstOrNull()
+            while (e != null) {
                 if (++count > maxCount) {
                     logger.warn {
                         "Factor of $maxFactor exceeded. Stopping fixed point computation"
                     }
                     break
                 }
-                val e = queue.first()
-                val olds = e.vertices.map(::get)
+                val vertices = e.vertices
+                val boxes = vertices.map { vals[it] }
+                val olds = boxes.mapIndexed { i, box -> box?.t ?: defaultValue(vertices[i]) }
                 val news = e.func(olds)
                 logger.trace {
                     "${e.green}\n" +
-                        zip(e.vertices, olds, news).joinToString("\n") { (v, o, n) ->
+                        zip(vertices, olds, news).joinToString("\n") { (v, o, n) ->
                             "   ${v.yellow} : ${
                                 "$o -> $n".letIf(o != n) {
                                     it.blue
@@ -123,13 +142,28 @@ class HyperGraphFixedPointCalculator<V, T>(
                             }"
                         }
                 }
-                for ((v, old, new) in zip(e.vertices, olds, news)) {
-                    set(v, new)
-                    if (get(v) != old) {
+                vertices.forEachIndexed { i, v ->
+                    // In case the vertex is used twice by this edge, we need to get the most up-to-date boxed value
+                    val box = boxes[i] ?: vals[v]
+                    val old = box?.t ?: defaultValue(v)
+                    val new = news[i]
+                    val normalizedNew = normalize(v, old, new)
+                    if (normalizedNew != old) {
+                        if (box != null) {
+                            box.t = normalizedNew
+                        } else {
+                            vals[v] = Box(normalizedNew)
+                        }
                         queue += vertexToEdges[v].orEmpty()
                     }
                 }
                 queue -= e
+
+                // We traverse the edges in queue in the order in which they were added to the graph, continuing on to
+                // "later" edges even if "earlier" edges are added to the queue.  When we've exhausted the "later"
+                // edges, we start over with the "early" ones. Experimentally, this seems to be a good heuristic for
+                // convergence speed.
+                e = queue.higher(e) ?: queue.firstOrNull()
             }
             logger.debug {
                 "edgeCalculations = $count, edges = ${allEdges.size}, factor = ${count / allEdges.size}"

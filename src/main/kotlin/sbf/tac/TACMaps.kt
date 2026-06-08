@@ -25,27 +25,31 @@ import sbf.domains.INumValue
 import sbf.domains.IOffset
 import sbf.domains.IPTANodeFlags
 
+/** Return a TAC instruction that stores [value] in [map] at index [idx] **/
+fun store(map: TACSymbol.Var, idx: TACSymbol, value: TACSymbol) =
+    TACCmd.Simple.AssigningCmd.ByteStore(idx,  value, map)
+
 /** Return instructions that havoc the indexes [loc] + [indexes] of the byte map [base] **/
 context(SbfCFGToTAC<TNum, TOffset, TFlags>)
-fun <TNum : INumValue<TNum>, TOffset : IOffset<TOffset>, TFlags: IPTANodeFlags<TFlags>>
+internal fun <TNum : INumValue<TNum>, TOffset : IOffset<TOffset>, TFlags: IPTANodeFlags<TFlags>>
     havocByteMapLocation(indexes: List<PTAOffset>, base: TACByteMapVariable, loc: TACSymbol.Var): List<TACCmd.Simple> {
     val values = ArrayList<TACSymbol.Var>()
     val cmds = mutableListOf<TACCmd.Simple>()
     indexes.forEach { _ ->
         val value = vFac.mkFreshIntVar()
-        cmds.add(TACCmd.Simple.AssigningCmd.AssignHavocCmd(value))
+        cmds += havoc(value)
         values.add(value)
     }
-    cmds.addAll(mapStores(base, loc, indexes, values))
+    cmds += mapStores(base, loc, indexes, values)
     return cmds
 }
 
 /** Emit TAC code for index = [base] + [offset] **/
 context(SbfCFGToTAC<TNum, TOffset, TFlags>)
-fun <TNum : INumValue<TNum>, TOffset : IOffset<TOffset>, TFlags: IPTANodeFlags<TFlags>>
+internal fun <TNum : INumValue<TNum>, TOffset : IOffset<TOffset>, TFlags: IPTANodeFlags<TFlags>>
     computeTACMapIndex(base: TACSymbol.Var, offset: PTAOffset, cmds: MutableList<TACCmd.Simple>): TACSymbol.Var {
     val index = vFac.mkFreshIntVar()
-    cmds.add(assign(index, exprBuilder.mkAddExpr(base.asSym(), exprBuilder.mkConst(offset.v).asSym(), useMathInt = false)))
+    cmds += assign(index, sbfTacB { base.asSym().addNoOvf(sbfTacB.mkConst(offset.v).asSym(), "computing TAC map index") })
     return index
 }
 
@@ -54,7 +58,7 @@ fun <TNum : INumValue<TNum>, TOffset : IOffset<TOffset>, TFlags: IPTANodeFlags<T
  * [offsets] must be relative to [base]
  */
 context(SbfCFGToTAC<TNum, TOffset, TFlags>)
-fun <TNum : INumValue<TNum>, TOffset : IOffset<TOffset>, TFlags: IPTANodeFlags<TFlags>>
+internal fun <TNum : INumValue<TNum>, TOffset : IOffset<TOffset>, TFlags: IPTANodeFlags<TFlags>>
     mapStores(
               byteMap: TACByteMapVariable,
               base: TACSymbol.Var,
@@ -65,9 +69,9 @@ fun <TNum : INumValue<TNum>, TOffset : IOffset<TOffset>, TFlags: IPTANodeFlags<T
 
     val cmds = mutableListOf<TACCmd.Simple>()
     for ( (offset, value) in offsets.zip(values)) {
-        val loc = computeTACMapIndex(base, offset, cmds)
+        val idx = computeTACMapIndex(base, offset, cmds)
         // REVISIT: ByteStore assumes 32 bytes are written so the actual width is being ignored
-        cmds.add(TACCmd.Simple.AssigningCmd.ByteStore(loc, value, byteMap.tacVar))
+        cmds += store(byteMap.tacVar, idx, value)
     }
     return cmds
 }
@@ -77,7 +81,7 @@ fun <TNum : INumValue<TNum>, TOffset : IOffset<TOffset>, TFlags: IPTANodeFlags<T
  * [offset] must be relative to [base]
  */
 context(SbfCFGToTAC<TNum, TOffset, TFlags>)
-fun <TNum : INumValue<TNum>, TOffset : IOffset<TOffset>, TFlags: IPTANodeFlags<TFlags>>
+internal fun <TNum : INumValue<TNum>, TOffset : IOffset<TOffset>, TFlags: IPTANodeFlags<TFlags>>
     mapStores(
               byteMap: TACByteMapVariable,
               base: TACSymbol.Var,
@@ -89,7 +93,7 @@ fun <TNum : INumValue<TNum>, TOffset : IOffset<TOffset>, TFlags: IPTANodeFlags<T
  * Emit TAC code that loads each word from [byteMap] starting at [base] up to [length]
  */
 context(SbfCFGToTAC<TNum, TOffset, TFlags>)
-fun <TNum : INumValue<TNum>, TOffset : IOffset<TOffset>, TFlags: IPTANodeFlags<TFlags>>
+internal fun <TNum : INumValue<TNum>, TOffset : IOffset<TOffset>, TFlags: IPTANodeFlags<TFlags>>
     mapLoads(byteMap: TACByteMapVariable,
              base: TACSymbol.Var,
              wordSize: Byte, length: Long,
@@ -99,8 +103,7 @@ fun <TNum : INumValue<TNum>, TOffset : IOffset<TOffset>, TFlags: IPTANodeFlags<T
     for (i in 0 until numOfWords) {
         val loc = computeTACMapIndex(base, PTAOffset(wordSize.toLong() * i.toLong()), cmds)
         val x = vFac.mkFreshIntVar()
-        // REVISIT: ByteLoad assumes 32 bytes are read so the actual width (wordSize) is being ignored
-        cmds.add(TACCmd.Simple.AssigningCmd.ByteLoad(x, loc, byteMap.tacVar))
+        cmds += sbfTacB.load(x, loc, wordSize.toShort(), byteMap.tacVar)
         intVars.add(x)
     }
     // We should add at each loop iteration that [loc] cannot be greater than SBF_INPUT_END
@@ -108,6 +111,7 @@ fun <TNum : INumValue<TNum>, TOffset : IOffset<TOffset>, TFlags: IPTANodeFlags<T
     // be greater than SBF_INPUT_END. Note that our solution is still sound, but it might produce spurious
     // counterexamples is numOfWords is too large. In fact, right now this cannot happen since we use 256 bits to
     // represent integers.
-    cmds.addAll(addMemoryLayoutAssumptions(base, null))
+    cmds += addMemoryLayoutAssumptions(base, null)
     return intVars
 }
+

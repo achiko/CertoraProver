@@ -71,7 +71,9 @@ abstract class CallResolutionTableReportView<T : CallResolutionTableRowReportVie
         CALL_RESOLUTION_WARNINGS("callResolutionWarnings"),
         IS_IN_COUNTER_EXAMPLE("isInCounterExample"),
         NAME("name"),
-        JUMP_TO_DEFINITION("jumpToDefinition")
+        JUMP_TO_DEFINITION("jumpToDefinition"),
+        STORAGE_PATH("storagePath"),
+        SELECTOR("selector")
         ;
 
         operator fun invoke(): String = repString

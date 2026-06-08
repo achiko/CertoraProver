@@ -35,6 +35,9 @@ import report.calltrace.printer.StackEntry
 import scene.IScene
 import spec.*
 import spec.CVLCompiler.CallIdContext.Companion.toContext
+import spec.ProgramGenMixin.Companion.andThen
+import spec.converters.LowLevelDecoder
+import spec.converters.repr.CVLDataOutput
 import spec.converters.toCRD
 import spec.cvlast.CVLHook
 import spec.cvlast.CVLHookPattern
@@ -59,16 +62,47 @@ class HookInliner(val scene: IScene, private val cvlCompiler: CVLCompiler) : Cod
     private data class HookInliningInfo(
         val cvlHook: CVLHook,
         val match: HookMatch,
-        val pattern: TACHookPattern,
+        val pattern: TACHookPattern<*>,
         val program: CVLTACProgram,
         val preCommands: CommandWithRequiredDecls<TACCmd.Simple> = CommandWithRequiredDecls(),
         val postCommands: CommandWithRequiredDecls<TACCmd.Simple> = CommandWithRequiredDecls(),
         val ext: Map<VMParam.Named, TACExpr.Sym.Var> = mapOf()
     )
 
+    private data class CompiledHook<out M: HookMatch, out T: TACHookPattern<M>>(
+        val hook: CVLHook,
+        val pattern: T
+    )
+
+    private val opcodePatterns : List<CompiledHook<HookMatch.OpcodeMatch, TACHookPattern.OpcodeHook>>
+    private val eventPatterns : List<CompiledHook<HookMatch.Event, TACHookPattern.EventHook>>
+    private val storagePatterns : List<CompiledHook<HookMatch.StorageMatch, TACHookPattern.StorageHook>>
+    private val createPatterns : List<CompiledHook<HookMatch.Create, TACHookPattern.Create>>
+
+    init {
+        val cPatt = mutableListOf<CompiledHook<HookMatch.Create, TACHookPattern.Create>>()
+        val ePatt = mutableListOf<CompiledHook<HookMatch.Event, TACHookPattern.EventHook>>()
+        val sPatt = mutableListOf<CompiledHook<HookMatch.StorageMatch, TACHookPattern.StorageHook>>()
+        val oPatt = mutableListOf<CompiledHook<HookMatch.OpcodeMatch, TACHookPattern.OpcodeHook>>()
+        for(p in cvlCompiler.cvl.hooks) {
+            when(val comp = TACHookPattern.cvlHookPatternToTACHookPattern(
+                contracts = scene.getContracts(), pattern = p.pattern, scope=p.scope
+            )) {
+                is TACHookPattern.Create -> cPatt.add(CompiledHook(p, comp))
+                is TACHookPattern.OpcodeHook -> oPatt.add(CompiledHook(p, comp))
+                is TACHookPattern.EventHook -> ePatt.add(CompiledHook(p, comp))
+                is TACHookPattern.StorageHook -> sPatt.add(CompiledHook(p, comp))
+            }
+        }
+        opcodePatterns = oPatt
+        eventPatterns = ePatt
+        storagePatterns = sPatt
+        createPatterns = cPatt
+    }
+
     private val logger = Logger(LoggerTypes.HOOK_INSTRUMENTATION)
     private val somePathsMatches = mutableSetOf<HookMatch.StorageMatch.SomePaths>()
-    private val impreciseIndices = mutableSetOf<Pair<TACHookPattern, Set<TACSymbol.Var>>>()
+    private val impreciseIndices = mutableSetOf<Pair<TACHookPattern.StorageHook, Set<TACSymbol.Var>>>()
 
     // The hook, the matched storage command's base, and the type descriptor of the hook's value.
     // The base's bitwidth and the vmtype's bitwidth differ.
@@ -85,7 +119,7 @@ class HookInliner(val scene: IScene, private val cvlCompiler: CVLCompiler) : Cod
                 is TACHookPattern.StorageHook.TACSlotPattern.StructAccess -> slot.offset.value
             }
     }
-    private val hookValueWidthMismatches = mutableMapOf<HookMatch, HookValueWidthMismatch>()
+    private val unhandledMismatches = mutableListOf<HookValueWidthMismatch>()
 
     /**
      * Essentially, all this nonsense is to handle the case when the storage analysis infers multiple
@@ -96,7 +130,7 @@ class HookInliner(val scene: IScene, private val cvlCompiler: CVLCompiler) : Cod
     private fun findMayNotEqual(
         ast: CoreTACProgram,
         ptr: CmdPointer,
-        pattern: TACHookPattern,
+        pattern: TACHookPattern.StorageHook,
         match: HookMatch,
         allocatedTACSymbols: TACSymbolAllocation
     ): Set<TACSymbol.Var> {
@@ -183,27 +217,33 @@ class HookInliner(val scene: IScene, private val cvlCompiler: CVLCompiler) : Cod
                     mayNotEqual(oneMatch.base, anotherMatch.base, slotPattern.base)
                 }
             }
-            if (pattern is TACHookPattern.StorageHook) {
-                return mayNotEqual(oneMatch, anotherMatch, pattern.slot.canonicalize())
-            }
-            return mayNotEquals
+            return mayNotEqual(oneMatch, anotherMatch, pattern.slot.canonicalize())
         }
 
         return match.matchedStorageAccessPaths.drop(0).flatMap { anotherMatch -> mayNotEqual(anotherMatch) }.toSet()
     }
 
-    /**
-     * Returns all hooks that match filter function [pred] and command [cmd].
-     */
-    private fun matchedHooksForFilter(cmd: TACCmd.Simple, pred: (CVLHook) -> Boolean) = cvlCompiler.cvl.hooks.filter(pred).mapNotNull { hook ->
-        val pattern = TACHookPattern.cvlHookPatternToTACHookPattern(hook.pattern, hook.scope, scene.getContracts())
-        val match = pattern.matches(cmd)
+    data class HookPatternMatch<out M: HookMatch, out P: TACHookPattern<M>>(
+        val hook: CVLHook,
+        val patt: P,
+        val match: M
+    )
 
-        if (match !is HookMatch.None) {
-            Triple(hook, pattern, match)
-        } else {
-            null
-        }
+    /**
+     * Returns all matches at [lcmd] in [context] against the matchers in [matchers]. [M] is the type
+     * of the match, and [P] is the type of patters which produce [M].
+     */
+    private fun <M: HookMatch, P: TACHookPattern<M>> matchedHooksForPatt(
+        lcmd: LTACCmd,
+        context: CoreTACProgram,
+        matchers: Iterable<CompiledHook<M, P>>
+    ) = matchers.mapNotNull { toMatch ->
+        val match = toMatch.pattern.matches(lcmd, context) ?: return@mapNotNull null
+        HookPatternMatch(
+            hook =  toMatch.hook,
+            patt = toMatch.pattern,
+            match = match
+        )
     }
 
     private fun noMatchError(matches: List<HookMatch>, lcmd: LTACCmd): Nothing {
@@ -248,24 +288,20 @@ class HookInliner(val scene: IScene, private val cvlCompiler: CVLCompiler) : Cod
         }
 
         // look for all hooks which match this command
-        val matchedCommands = matchedHooksForFilter(cmd) { it.pattern is CVLHookPattern.StoragePattern }
-
-        if (matchedCommands.any { (_, _, match) -> match !is HookMatch.StorageMatch }) {
-            throw IllegalStateException("Non-storage hooks should be filtered out when looking for a storage hook")
-        }
+        val matchedHooks = matchedHooksForPatt(lcmd, ast, storagePatterns)
 
         // absolutely no matches, return
-        if (matchedCommands.isEmpty()) {
+        if (matchedHooks.isEmpty()) {
             return null
         }
 
-        if (matchedCommands.any { (_, _, match) -> match is HookMatch.StorageMatch.SomePaths }) {
+        if (matchedHooks.any { (_, _, match) -> match is HookMatch.StorageMatch.SomePaths }) {
             /**
              *  Collect all cases where only some--but not all--of the paths inferred by the storage analysis match
              *  the given hook. IF some match and some don't, this is considered an error and will prevent inlining
              *  from happening.
              */
-            somePathsMatches.addAll(matchedCommands.mapNotNull { (_, _, match) ->
+            somePathsMatches.addAll(matchedHooks.mapNotNull { (_, _, match) ->
                 match as? HookMatch.StorageMatch.SomePaths
             })
             return null
@@ -275,8 +311,8 @@ class HookInliner(val scene: IScene, private val cvlCompiler: CVLCompiler) : Cod
          * The bitwidth of a hook's value must match the base we're reading from, otherwise
          * we will observe incorrect data.
          */
-        fun mismatchedHookValueWidths(tacHook: TACHookPattern): HookValueWidthMismatch? {
-            if (cmd !is TACCmd.Simple.StorageAccessCmd || tacHook !is TACHookPattern.StorageHook) {
+        fun mismatchedHookValueWidths(tacHook: TACHookPattern.StorageHook): HookValueWidthMismatch? {
+            if (cmd !is TACCmd.Simple.StorageAccessCmd) {
                 return null
             }
             val vmType = tacHook.value.vmType
@@ -291,19 +327,18 @@ class HookInliner(val scene: IScene, private val cvlCompiler: CVLCompiler) : Cod
             }
         }
 
-        matchedCommands.forEach { (_, tacHook, match) ->
-            mismatchedHookValueWidths(tacHook)?.let {
-                hookValueWidthMismatches[match] = it
-            }
-        }
 
         /**
          * We have handled [HookMatch.StorageMatch.SomePaths] case above. Since duplicate
          * hooks should be caught by the type checker, we either have exactly 1 full match
          * ([HookMatch.StorageMatch.AllPaths]), or no full matches.
          */
-        val (hook, pattern, match) = matchedCommands.singleOrNull { (_, _, match) -> match is HookMatch.StorageMatch.AllPaths }
-            ?: noMatchError(matchedCommands.map { it.third }.filterIsInstance<HookMatch.StorageMatch.AllPaths>(), lcmd)
+        val (hook, pattern, match) = matchedHooks.singleOrNull() ?: noMatchError(matchedHooks.map { it.match }.filterIsInstance<HookMatch.StorageMatch.AllPaths>(), lcmd)
+        check(match is HookMatch.StorageMatch.AllPaths) {
+            "Have non-AllPath match @ $lcmd"
+        }
+
+        val widthMismatch = mismatchedHookValueWidths(tacHook = pattern)
 
         val (code, allocatedTACSymbols) = cvlCompiler.compileHook(hook, lcmd.ptr.block.getCallId())
         val program = code.getAsSimple()
@@ -336,6 +371,7 @@ class HookInliner(val scene: IScene, private val cvlCompiler: CVLCompiler) : Cod
         // on this command
         if (usedMayNotEqual.isNotEmpty()) {
             impreciseIndices.add(pattern to mayNotEqual)
+            widthMismatch?.let(unhandledMismatches::add)
             return null
         }
 
@@ -370,7 +406,7 @@ class HookInliner(val scene: IScene, private val cvlCompiler: CVLCompiler) : Cod
 
             // We're potentially inserting a load from storage, so the
             // hook value width mismatch problem applies here.
-            hookValueWidthMismatches[match]?.let { mismatch ->
+            widthMismatch?.let { mismatch ->
                 compileWidthMask(previousValue.name, mismatch, tmpHoldPreviousValue.asSym()).let { (e, cmds) ->
                     toRet.extend(cmds)
                     (e.s as? TACSymbol.Var)?.let { x ->
@@ -392,8 +428,8 @@ class HookInliner(val scene: IScene, private val cvlCompiler: CVLCompiler) : Cod
         }
 
         val (fixMismatch, fixedMatch) =
-            if (match in hookValueWidthMismatches) {
-                fixWidthMismatch(pattern, match, hookValueWidthMismatches[match]!!)
+            if (widthMismatch != null) {
+                fixWidthMismatch(pattern, match, widthMismatch)
             } else {
                 CommandWithRequiredDecls<TACCmd.Simple>() to match
             }
@@ -420,7 +456,7 @@ class HookInliner(val scene: IScene, private val cvlCompiler: CVLCompiler) : Cod
      * widths of the value parameters are mismatched, then generate commands to mask the value
      * instantiation and use this masked value in the returned hook match.
      */
-    private fun fixWidthMismatch(pattern: TACHookPattern, match: HookMatch, mismatch: HookValueWidthMismatch): Pair<CommandWithRequiredDecls<TACCmd.Simple>, HookMatch> {
+    private fun fixWidthMismatch(pattern: TACHookPattern.StorageHook, match: HookMatch.StorageMatch, mismatch: HookValueWidthMismatch): Pair<CommandWithRequiredDecls<TACCmd.Simple>, HookMatch> {
         val default by lazy {
             CommandWithRequiredDecls<TACCmd.Simple>() to match
         }
@@ -430,15 +466,13 @@ class HookInliner(val scene: IScene, private val cvlCompiler: CVLCompiler) : Cod
             return default
         }
 
-        val rhs = (pattern as? TACHookPattern.StorageHook)?.value
-            ?.let(match.substitutions::get)
+        val rhs = pattern.value.let(match.substitutions::get)
             ?.tryAs<HookValue.Direct>()?.expr
             ?: return default
 
         /* Replace the match v := rhs with v := rhs & MASK_FOR_WIDTH */
         val (maskedExpr, cmds) = compileWidthMask("hookInlinerWidthMasking", mismatch, rhs)
 
-        hookValueWidthMismatches.remove(match)
         return cmds to match.withSubstitution(pattern.value, maskedExpr)
     }
 
@@ -491,11 +525,32 @@ class HookInliner(val scene: IScene, private val cvlCompiler: CVLCompiler) : Cod
             val hookValue = substIds[assignVMParam.rhsName]
                 ?: throw CertoraInternalException(CertoraInternalErrorType.HOOK_INLINING, "found an unexpected VM value ${assignVMParam.rhsName}")
 
-            check(assignVMParam.rhsType.context == FromVMContext.HookValue) { throw CertoraInternalException(CertoraInternalErrorType.HOOK_INLINING,
-                "Got a non-hook VM Value inside a hook: ${VMParam.Named(assignVMParam.rhsName, assignVMParam.rhsType.descriptor, Range.Empty())}")}
+            check((assignVMParam.rhsType.context == FromVMContext.HookValue && hookValue is HookValue.Direct) ||
+                (assignVMParam.rhsType.context == FromVMContext.EventHookBinding && hookValue is HookValue.EncodedEventParam))
 
-            assignVMParam.rhsType.descriptor.converterTo(assignVMParam.lhsType, FromVMContext.HookValue.getVisitor()).force()
-                .convertTo(hookValue, assignVMParam.lhsVar) { it }.toCRD().toProg("hook inlining", where.ptr.block.calleeIdx.toContext())
+            if(assignVMParam.rhsType.context == FromVMContext.EventHookBinding) {
+                check(hookValue is HookValue.EncodedEventParam)
+                val (dec, setupProg) = LowLevelDecoder(
+                    buffer = hookValue.memoryBase,
+                    offset = hookValue.base,
+                    scalars = mapOf(),
+                    relativeScalars = mapOf()
+                )
+                setupProg andThen dec.saveScope { f ->
+                    f.advanceCurr(hookValue.offset) { decodeLoc ->
+                        assignVMParam.rhsType.descriptor.converterTo(assignVMParam.lhsType, FromVMContext.EventHookBinding.getVisitor()).force().convertTo(
+                            fromVar = decodeLoc,
+                            toVar = CVLDataOutput(assignVMParam.lhsVar, where.ptr.block.getCallId()),
+                            cb = { it }
+                        ) as CVLTACProgram
+                    }
+                }
+            } else {
+                check(assignVMParam.rhsType.context == FromVMContext.HookValue) { throw CertoraInternalException(CertoraInternalErrorType.HOOK_INLINING,
+                    "Got a non-hook VM Value inside a hook: ${VMParam.Named(assignVMParam.rhsName, assignVMParam.rhsType.descriptor, Range.Empty())}")}
+                assignVMParam.rhsType.descriptor.converterTo(assignVMParam.lhsType, FromVMContext.HookValue.getVisitor()).force()
+                    .convertTo(hookValue, assignVMParam.lhsVar) { it }.toCRD().toProg("hook inlining", where.ptr.block.calleeIdx.toContext())
+            }
         }
 
         return subst to convertIns
@@ -505,7 +560,8 @@ class HookInliner(val scene: IScene, private val cvlCompiler: CVLCompiler) : Cod
      * Inlines TAC command associated with Create hooks to the respective blocks.
      */
     private fun inlineCreateHooksToBlock(
-        lcmd: LTACCmd
+        lcmd: LTACCmd,
+        context: CoreTACProgram
     ): HookInliningInfo? {
         val cmd = lcmd.cmd
         if (cmd !is TACCmd.Simple.AssigningCmd || TACMeta.CONTRACT_CREATION !in cmd.meta || TACKeyword.CREATED.isName {  cmd.lhs.namePrefix != it }) {
@@ -513,11 +569,7 @@ class HookInliner(val scene: IScene, private val cvlCompiler: CVLCompiler) : Cod
         }
 
         // look for all hooks which match this command
-        val matchedCommands = matchedHooksForFilter(cmd) { it.pattern is CVLHookPattern.Create }
-
-        if (matchedCommands.any { (_, _, match) -> match !is HookMatch.Create }) {
-            throw IllegalStateException("Non-create hooks should be filtered out when looking for a Create hook")
-        }
+        val matchedCommands = matchedHooksForPatt(lcmd, context, createPatterns)
 
         if (matchedCommands.isEmpty()) {
             return null
@@ -528,8 +580,8 @@ class HookInliner(val scene: IScene, private val cvlCompiler: CVLCompiler) : Cod
          * All entries in matchedCommands are [HookMatch.Create]
          */
 
-        val (hook, pattern, match) = matchedCommands.singleOrNull { (_, _, match) -> match is HookMatch.Create }
-            ?: noMatchError(matchedCommands.map { it.third }.filterIsInstance<HookMatch.Create>(), lcmd)
+        val (hook, pattern, match) = matchedCommands.singleOrNull()
+            ?: noMatchError(matchedCommands.map { it.match }, lcmd)
 
         val (code, _) = cvlCompiler.compileHook(hook, lcmd.ptr.block.getCallId())
         val program = code.getAsSimple()
@@ -537,8 +589,33 @@ class HookInliner(val scene: IScene, private val cvlCompiler: CVLCompiler) : Cod
         return HookInliningInfo(hook, match, pattern, program)
     }
 
+    private fun inlineEventHooksToBlock(
+        lcmd: LTACCmd,
+        context: CoreTACProgram
+    ): HookInliningInfo? {
+        if(lcmd.cmd !is TACCmd.Simple.LogCmd) {
+            return null
+        }
+        val matched = matchedHooksForPatt(lcmd, context, eventPatterns)
+        if(matched.isEmpty()) {
+            return null
+        }
+        val principleMatch = matched.singleOrNull() ?: noMatchError(
+            matched.map { it.match }, lcmd
+        )
+
+        val (hook, pattern, match) = principleMatch
+
+        val (code, _) = cvlCompiler.compileHook(principleMatch.hook, lcmd.ptr.block.getCallId())
+
+        return HookInliningInfo(hook, match, pattern, code.getAsSimple().prependToBlock0(
+            setupExecutingContract(match)
+        ))
+    }
+
     private fun inlineOpcodeHooksToBlock(
         lcmd: LTACCmd,
+        context: CoreTACProgram
     ): HookInliningInfo? {
         val cmd = lcmd.cmd
         if (cmd !is TACCmd.Simple.SummaryCmd || cmd.summ !is OpcodeSummary) {
@@ -546,24 +623,19 @@ class HookInliner(val scene: IScene, private val cvlCompiler: CVLCompiler) : Cod
         }
 
         // look for all hooks which match this command
-        val matchedCommands = matchedHooksForFilter(cmd) { it.pattern is CVLHookPattern.Opcode }
-
-        if (matchedCommands.any { (_, _, match) -> match !is HookMatch.OpcodeMatch }) {
-            throw IllegalStateException("Non-opcode hooks should be filtered out when looking for an opcode hook, got ${
-                matchedCommands.filter { (_, _, match) -> match !is HookMatch.OpcodeMatch}}")
-        }
+        val matchedCommands = matchedHooksForPatt(lcmd, context, opcodePatterns)
 
         if (matchedCommands.isEmpty()) {
             return null
         }
+
 
         /**
          * We had at least one match for an opcode hook!
          * All entries in matchedCommands are [HookMatch.OpcodeMatch]
          */
 
-        val (hook, pattern, match) = matchedCommands.singleOrNull { (_, _, match) -> match is HookMatch.OpcodeMatch }
-            ?: noMatchError(matchedCommands.map { it.third }.filterIsInstance<HookMatch.OpcodeMatch>(), lcmd)
+        val (hook, pattern, match) = matchedCommands.singleOrNull() ?: noMatchError(matchedCommands.map { it.match }, lcmd)
 
         val (code, _) = cvlCompiler.compileHook(hook, lcmd.ptr.block.getCallId())
         val program = code.getAsSimple().prependToBlock0(setupExecutingContract(match))
@@ -571,9 +643,9 @@ class HookInliner(val scene: IScene, private val cvlCompiler: CVLCompiler) : Cod
         return HookInliningInfo(hook, match, pattern, program)
     }
 
-    private fun setupExecutingContract(match: HookMatch) : SimpleCmdsWithDecls {
+    private fun setupExecutingContract(match: HookMatch.WithExecutingContractContext) : SimpleCmdsWithDecls {
         val lhs = CVLKeywords.executingContract.toVar()
-        val executing = (match as HookMatch.OpcodeMatch).executingContractVar
+        val executing = match.executingContractVar
         return CommandWithRequiredDecls(
             TACCmd.Simple.AssigningCmd.AssignExpCmd(
                 lhs = lhs,
@@ -626,8 +698,9 @@ class HookInliner(val scene: IScene, private val cvlCompiler: CVLCompiler) : Cod
             block.forEach forEachBlock@{ lcmd ->
                 // Note we'll only reach here if storage analysis *was* run and there were *no errors*
                 val hookInliningInfo = inlineStorageHooksInBlock(ast, lcmd)
-                    ?: inlineCreateHooksToBlock(lcmd)
-                    ?: inlineOpcodeHooksToBlock(lcmd)
+                    ?: inlineCreateHooksToBlock(lcmd, ast)
+                    ?: inlineEventHooksToBlock(lcmd, ast)
+                    ?: inlineOpcodeHooksToBlock(lcmd, ast)
                     ?: return@forEachBlock
 
 
@@ -705,12 +778,9 @@ class HookInliner(val scene: IScene, private val cvlCompiler: CVLCompiler) : Cod
             }
 
             impreciseIndices.forEach { (pattern, badBois) ->
-                @Suppress("USELESS_IS_CHECK")
-                if (pattern is CVLHookPattern.StoragePattern) {  // Should always be ~true~ -> false? what is happening here?
-                    logger.error {
-                        "For slot pattern ${pattern.slot}, the storage analysis was unable to precisely " +
-                            "infer matches for the hook variables ${badBois.joinToString(", ")}."
-                    }
+                logger.error {
+                    "For slot pattern ${pattern.slot}, the storage analysis was unable to precisely " +
+                        "infer matches for the hook variables ${badBois.joinToString(", ")}."
                 }
             }
             throw CertoraException(
@@ -719,8 +789,8 @@ class HookInliner(val scene: IScene, private val cvlCompiler: CVLCompiler) : Cod
             )
         }
 
-        if (hookValueWidthMismatches.any()) {
-            hookValueWidthMismatches.forEachEntry { (_, mismatch) ->
+        if (unhandledMismatches.any()) {
+            unhandledMismatches.forEach { mismatch ->
                 logger.error {
                     "For hook pattern ${mismatch.pattern}, mismatch between ${mismatch.base} width " +
                         "and value type ${mismatch.valueTypeDescriptor} at offset ${mismatch.offset}"

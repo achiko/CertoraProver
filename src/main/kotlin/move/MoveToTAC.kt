@@ -260,8 +260,6 @@ class MoveToTAC private constructor (val scene: MoveScene) {
     private var callIdAllocator = 0
     private fun newCallId() = callIdAllocator++
 
-    private fun PersistentStack<MoveCall>.format() = joinToString(" ← ") { it.callee.toString() }
-
     private enum class SanityMode {
         NONE,
         ASSERT_TRUE,
@@ -310,8 +308,29 @@ class MoveToTAC private constructor (val scene: MoveScene) {
                                     check(i in parametricTargets) { "Missing function argument value" }
                                     assign(arg) { i.asTACExpr }
                                 }
-                                // All other arguments are non-deterministic
-                                else -> type.assignHavoc(arg)
+
+                                // Values other than functions are simply nondeterministic
+                                is MoveType.Value -> type.assignHavoc(arg)
+
+                                // Reference-typed parameters are supported by creating a new location for each one,
+                                // and initializing its value to nondet.  This is sound, because:
+                                //  1) It's illegal in Move to have more than one reference to a given location, if you
+                                //     have a mutable reference to that location.  So there's no question of whether
+                                //     mutation of one reference will affect the value observed through another
+                                //     reference.
+                                //  2) Immutable references may alias, but there is no way to observe that from a Move
+                                //     program!  References can only be compared for value equality, not reference
+                                //     equality.
+                                is MoveType.Reference -> {
+                                    val havocLoc = TACSymbol.Var(
+                                        "${entryFunc.toVarName()}_arg_${i}_value",
+                                        type.refType.toTag()
+                                    )
+                                    mergeMany(
+                                        tac.generation.assignHavoc(havocLoc),
+                                        TACCmd.Move.BorrowLocCmd(ref = arg, loc = havocLoc).withDecls(arg)
+                                    )
+                                }
                             }
                         }
                     ),
@@ -544,11 +563,11 @@ class MoveToTAC private constructor (val scene: MoveScene) {
                 return compileCodeUnitCall(call, it)
             }
         } catch (e: TypeShadowedException) {
-            return havocCall(call, "Illegal access to shadowed type ${e.type.name}")
+            return failCall(call, FailedCallReason.ShadowedTypeAccess(e.type.name))
         }
 
         // Otherwise, just havoc the call
-        return havocCall(call, "Unrecognized native function")
+        return failCall(call, FailedCallReason.UnsummarizedNativeFunction)
     }
 
     private data class Local(val type: MoveType, val s: TACSymbol.Var)
@@ -710,7 +729,7 @@ class MoveToTAC private constructor (val scene: MoveScene) {
                 fun push(type: MoveType, value: TACExpr) = assign(push(type), meta) { value }
                 fun push(type: MoveType.Bits, value: BigInteger) = push(type, value.asTACExpr)
                 fun push(type: MoveType, exp: TACExprFactoryExtensions.() -> TACExpr) = push(type, TXF(exp))
-                fun pushHavoc(type: MoveType) = type.assignHavoc(push(type))
+                fun pushHavoc(type: MoveType.Value) = type.assignHavoc(push(type))
 
                 fun mathOp(op: (MoveType.Bits, TACExpr, TACExpr) -> MoveCmdsWithDecls): MoveCmdsWithDecls {
                     val type = topType()
@@ -1339,22 +1358,5 @@ class MoveToTAC private constructor (val scene: MoveScene) {
         }
 
         CompiledCodeUnit(entryBlock, locals, results, tacBlocks.build())
-    }
-
-    context(SummarizationContext)
-    private fun havocCall(call: MoveCall, reason: String) = singleBlockSummary(call) {
-        val func = call.callee
-        loggerSetupHelpers.warn { "Havocing call to $func from ${call.callStack.format()}: $reason" }
-        check(call.returns.size == func.returns.size) {
-            "Return count mismatch: ${call.returns.size} != ${func.returns.size}"
-        }
-        mergeMany(
-            label("Havoc'd call to $func from ${call.callStack.format()}: $reason"),
-            mergeMany(
-                func.returns.zip(call.returns).map { (type, ret) ->
-                    type.assignHavoc(ret)
-                }
-            )
-        )
     }
 }

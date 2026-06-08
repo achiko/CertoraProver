@@ -21,6 +21,7 @@ package wasm.analysis.memory
 import analysis.*
 import analysis.CommandWithRequiredDecls.Companion.withDecls
 import com.certora.collect.*
+import datastructures.stdcollections.*
 import tac.*
 import utils.*
 import vc.data.*
@@ -71,6 +72,10 @@ class StaticMemoryAnalysis private constructor(val graph: TACCommandGraph) {
      * @return the bytes stored at [address, address+size) if this range is read only in [ctp]
      */
     fun readBytes(address: BigInteger, size: Int): List<UByte>? {
+        if (size == 0) {
+            return emptyList()
+        }
+
         if (permissions.permission(address, address+size.toBigInteger() - BigInteger.ONE) != Permission.ReadOnly) {
             return null
         }

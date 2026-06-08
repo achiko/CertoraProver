@@ -22,7 +22,6 @@ import config.Config
 import datastructures.nonEmptyListOf
 import datastructures.stdcollections.*
 import log.*
-import report.RuleAlertReport
 import report.StatusReporter
 import report.callresolution.CallResolutionTableBase
 import rules.*
@@ -51,9 +50,7 @@ private val loggerTimes = Logger(LoggerTypes.TIMES)
  * If a builtin rule does not have a custom checker defined, it would be checked using the default checker in [rules.RuleChecker].
  */
 sealed class BuiltInRuleCustomChecker<G : BuiltInRuleGenerator> {
-
     abstract val eId: BuiltInRuleId
-    open val functionSetCanBeEmpty = false
 
     /**
      * Checks [rule].
@@ -164,11 +161,11 @@ sealed class BuiltInRuleCustomChecker<G : BuiltInRuleGenerator> {
                         )
                     }
                 }
+                val ruleCheck = ruleChecker.compiledSingleRuleCheck(rule, checkableTACs)
                 if (checkableTACs.isEmpty()) {
-                    RuleCheckResult.Skipped(rule, RuleAlertReport.Info("Nothing to do"))
+                    ruleCheck
                 } else {
-                    val result = ruleChecker.compiledSingleRuleCheck(rule, checkableTACs)
-                    val reducedResults = (result as? RuleCheckResult.Multi)?.results ?: emptyList()
+                    val reducedResults = (ruleCheck as? RuleCheckResult.Multi)?.results ?: emptyList()
                     RuleCheckResult.Multi(rule, reducedResults, RuleCheckResult.MultiResultType.PARAMETRIC)
                 }
             }.getOrElse { e ->

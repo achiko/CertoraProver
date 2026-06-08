@@ -18,6 +18,10 @@
 @file:UseSerializers(BigIntegerSerializer::class)
 package vc.data
 
+import analysis.LTACCmd
+import analysis.TACCommandGraph
+import analysis.icfg.InlinedMethodCallStack
+import analysis.icfg.InterContractCallResolver
 import analysis.storage.DisplayPath
 import analysis.storage.StorageAnalysis.Base
 import analysis.storage.StorageAnalysisResult.AccessPaths
@@ -26,6 +30,7 @@ import com.certora.collect.*
 import datastructures.stdcollections.*
 import evm.EVM_WORD_SIZE
 import kotlinx.serialization.UseSerializers
+import scene.ContractId
 import scene.IContractClass
 import spec.cvlast.*
 import spec.cvlast.Address
@@ -66,6 +71,7 @@ import spec.cvlast.Selfbalance
 import spec.cvlast.Selfdestruct
 import spec.cvlast.Staticcall
 import spec.cvlast.Timestamp
+import spec.cvlast.typedescriptors.EVMTypeDescriptor
 import spec.cvlast.typedescriptors.FromVMContext
 import spec.cvlast.typedescriptors.IHookParameter
 import tac.TACStorageType
@@ -93,6 +99,27 @@ sealed class HookValue : AmbiSerializable, IHookParameter, TransformableSymEntit
 
         override val support: Set<TACSymbol.Var> get() = TACExprFreeVarsCollector.getFreeVars(this.expr)
     }
+
+    @KSerializable
+    data class EncodedEventParam(
+        val base: TACSymbol,
+        val length: TACSymbol,
+        val offset: BigInteger,
+        val memoryBase: TACSymbol.Var
+    ) : HookValue() {
+        override fun transformSymbols(f: (TACSymbol) -> TACSymbol): HookValue {
+            return EncodedEventParam(
+                base=f(base),
+                length=f(length),
+                offset=offset,
+                memoryBase = f(memoryBase) as TACSymbol.Var
+            )
+        }
+
+        override val support: Set<TACSymbol.Var>
+            get() = setOfNotNull(base as? TACSymbol.Var, length as? TACSymbol.Var)
+
+    }
 }
 
 /**
@@ -106,14 +133,15 @@ sealed class HookMatch {
 
     abstract val substitutions: Map<VMParam.Named, HookValue>
 
-    abstract fun withSubstitution(v: VMParam.Named, subst: TACExpr): HookMatch
-
     /**
      * Does not match at all.
      */
     object None : HookMatch() {
         override val substitutions: Map<VMParam.Named, HookValue> = emptyMap()
-        override fun withSubstitution(v: VMParam.Named, subst: TACExpr): HookMatch = this
+    }
+
+    sealed interface WithExecutingContractContext {
+        val executingContractVar: TACSymbol.Var
     }
 
     /**
@@ -121,13 +149,15 @@ sealed class HookMatch {
      */
     data class Create(
         override val substitutions: Map<VMParam.Named, HookValue> = emptyMap()
-    ) : HookMatch() {
-        override fun withSubstitution(v: VMParam.Named, subst: TACExpr): HookMatch =
-            this.copy(substitutions = substitutions.plus(v to subst.inject()))
-    }
+    ) : HookMatch()
 
-    sealed class OpcodeMatch : HookMatch() {
-        abstract val executingContractVar: TACSymbol.Var
+    data class Event(
+        override val substitutions: Map<VMParam.Named, HookValue> = emptyMap(),
+        override val executingContractVar: TACSymbol.Var
+    ) : HookMatch(), WithExecutingContractContext
+
+    sealed class OpcodeMatch : HookMatch(), WithExecutingContractContext {
+        override abstract val executingContractVar: TACSymbol.Var
     }
 
     /**
@@ -136,6 +166,7 @@ sealed class HookMatch {
     sealed class StorageMatch : HookMatch() {
         abstract val matchedStorageAccessPaths: Set<AccessPath>
         abstract val expectedSlotPattern: TACHookPattern.StorageHook.TACSlotPattern
+        abstract fun withSubstitution(v: VMParam.Named, subst: TACExpr): HookMatch.StorageMatch
 
         /**
          * the _single_ [DisplayPath] corresponding to this storage match.
@@ -156,7 +187,7 @@ sealed class HookMatch {
             override val displayPath: DisplayPath?,
             override val substitutions: Map<VMParam.Named, HookValue> = emptyMap()
         ) : StorageMatch() {
-            override fun withSubstitution(v: VMParam.Named, subst: TACExpr): HookMatch =
+            override fun withSubstitution(v: VMParam.Named, subst: TACExpr): HookMatch.StorageMatch =
                 this.copy(substitutions = substitutions.plus(v to subst.inject()))
         }
 
@@ -176,7 +207,7 @@ sealed class HookMatch {
             override fun withSubstitution(
                 v: VMParam.Named,
                 subst: TACExpr
-            ): HookMatch = this
+            ): HookMatch.StorageMatch = this
         }
     }
 }
@@ -187,16 +218,16 @@ sealed class HookMatch {
  *
  * Currently we assume that base is tacS [TACKeyword.STORAGE]
  */
-sealed class TACHookPattern : Serializable {
+sealed class TACHookPattern<out T: HookMatch> : Serializable {
 
     /**
-     * Checks if the given [cmd] is matching the hook pattern.
+     * Checks if the given [lc] is matching the hook pattern.
      * @returns a [HookMatch] object describing the matching, including the original hook,
      * matches and non-matches, and substitutions (i.e., conversion of hook arguments to an expression over the command arguments)
      */
-    abstract fun matches(cmd: TACCmd): HookMatch
+    abstract fun matches(lc: LTACCmd, context: CoreTACProgram): T?
 
-    sealed class StorageHook : TACHookPattern() {
+    sealed class StorageHook : TACHookPattern<HookMatch.StorageMatch>() {
         companion object {
             fun CVLHookPattern.StoragePattern.Base.map() = when (this) {
                 CVLHookPattern.StoragePattern.Base.STORAGE -> Base.STORAGE
@@ -213,25 +244,27 @@ sealed class TACHookPattern : Serializable {
             override val value: VMParam.Named, val previousValue: VMParam.Named?,
         ) : StorageHook(), Serializable {
             override fun toString() = "Hook ${base.map().prefixChar}store $slot $value $base"
-            override fun matches(cmd: TACCmd): HookMatch = (if (cmd is TACCmd.Simple.AssigningCmd.AssignExpCmd && cmd.storeAddress(base) == slot.contract) {
-                // some writes to storage get simplified into normal assignments
-                    cmd.lhs.meta.find(TACMeta.SCALARIZATION_SORT)?.let { storageSort ->
-                        matchSlotPattern(slot, storageSort).withSubstitution(
-                            value, cmd.rhs
+            override fun matches(lc: LTACCmd, context: CoreTACProgram): HookMatch.StorageMatch? {
+                return if (lc.cmd is TACCmd.Simple.AssigningCmd.AssignExpCmd && lc.cmd.storeAddress(base) == slot.contract) {
+                    // some writes to storage get simplified into normal assignments
+                    lc.cmd.lhs.meta.find(TACMeta.SCALARIZATION_SORT)?.let { storageSort ->
+                        matchSlotPattern(slot, storageSort)?.withSubstitution(
+                            value, lc.cmd.rhs
                         )
                     }
-                } else if (cmd is TACCmd.Simple.WordStore &&
-                    cmd.storeAddress(base) == slot.contract
+                } else if (lc.cmd is TACCmd.Simple.WordStore &&
+                    lc.cmd.storeAddress(base) == slot.contract
                 ) {
-                    cmd.loc.toAccessPath(base.map())?.let { accessPaths ->
-                        val displayPath = cmd.loc.singleDisplayPathOrNull()
-                        matchSlotPattern(slot, accessPaths, displayPath).withSubstitution(
-                            value, cmd.value.asSym()
+                    lc.cmd.loc.toAccessPath(base.map())?.let { accessPaths ->
+                        val displayPath = lc.cmd.loc.singleDisplayPathOrNull()
+                        matchSlotPattern(slot, accessPaths, displayPath)?.withSubstitution(
+                            value, lc.cmd.value.asSym()
                         )
                     }
                 } else {
                     null
-                }) ?: HookMatch.None
+                }
+            }
         }
 
         data class Load(
@@ -240,28 +273,29 @@ sealed class TACHookPattern : Serializable {
             override val value: VMParam.Named,
         ) : StorageHook(), Serializable {
             override fun toString() = "Hook ${base.map().prefixChar}load $value $slot $base"
-            override fun matches(cmd: TACCmd): HookMatch =
-                (if (cmd is TACCmd.Simple.AssigningCmd.AssignExpCmd &&
-                    cmd.rhs is TACExpr.Sym.Var && cmd.rhs.s.meta[base.map().storageKey] == slot.contract
+            override fun matches(lc: LTACCmd, context: CoreTACProgram): HookMatch.StorageMatch? {
+                return (if (lc.cmd is TACCmd.Simple.AssigningCmd.AssignExpCmd &&
+                    lc.cmd.rhs is TACExpr.Sym.Var && lc.cmd.rhs.s.meta[base.map().storageKey] == slot.contract
                 ) {
                     // some reads from storage get simplified into normal assignments
-                    cmd.rhs.s.meta.find(TACMeta.SCALARIZATION_SORT)?.let { storageSort ->
-                        matchSlotPattern(slot, storageSort).withSubstitution(
-                            value, cmd.lhs.asSym()
+                    lc.cmd.rhs.s.meta.find(TACMeta.SCALARIZATION_SORT)?.let { storageSort ->
+                        matchSlotPattern(slot, storageSort)?.withSubstitution(
+                            value, lc.cmd.lhs.asSym()
                         )
                     }
-                } else if (cmd is TACCmd.Simple.AssigningCmd.WordLoad &&
-                    cmd.storeAddress(base) == slot.contract
+                } else if (lc.cmd is TACCmd.Simple.AssigningCmd.WordLoad &&
+                    lc.cmd.storeAddress(base) == slot.contract
                 ) {
-                    cmd.loc.toAccessPath(base.map())?.let { accessPaths ->
-                        val displayPath = cmd.loc.singleDisplayPathOrNull()
-                        matchSlotPattern(slot, accessPaths, displayPath).withSubstitution(
-                            value, cmd.lhs.asSym()
+                    lc.cmd.loc.toAccessPath(base.map())?.let { accessPaths ->
+                        val displayPath = lc.cmd.loc.singleDisplayPathOrNull()
+                        matchSlotPattern(slot, accessPaths, displayPath)?.withSubstitution(
+                            value, lc.cmd.lhs.asSym()
                         )
                     }
                 } else {
                     null
-                }) ?: HookMatch.None
+                })
+            }
         }
 
         /**
@@ -303,16 +337,16 @@ sealed class TACHookPattern : Serializable {
          * single slot being reference, so either [HookMatch.All] or [HookMatch.None] should be returned but not
          * [HookMatch.Some].
          */
-        fun matchSlotPattern(slot: TACSlotPattern, potentialMatch: ScalarizationSort): HookMatch {
+        fun matchSlotPattern(slot: TACSlotPattern, potentialMatch: ScalarizationSort): HookMatch.StorageMatch? {
             val canonSlot = slot.canonicalize()
-            fun slotEqual(slotIndex: TACSymbol.Const, matchOffsetBits: (BigInteger) -> Boolean): HookMatch {
+            fun slotEqual(slotIndex: TACSymbol.Const, matchOffsetBits: (BigInteger) -> Boolean): HookMatch.StorageMatch? {
                 val (index, offset) = when (potentialMatch) {
                     is ScalarizationSort.Split -> TACSymbol.Const(potentialMatch.idx) to BigInteger.ZERO
                     is ScalarizationSort.Packed -> {
-                        val const = (potentialMatch.packedStart as? ScalarizationSort.Split)?.idx ?: return HookMatch.None
+                        val const = (potentialMatch.packedStart as? ScalarizationSort.Split)?.idx ?: return null
                         TACSymbol.Const(const) to potentialMatch.start.toBigInteger()
                     }
-                    is ScalarizationSort.UnscalarizedBuffer -> return HookMatch.None
+                    is ScalarizationSort.UnscalarizedBuffer -> return null
                 }
                 return if (index == slotIndex && matchOffsetBits(offset)) {
                     // TODO: what to do with offset :[]
@@ -325,12 +359,12 @@ sealed class TACHookPattern : Serializable {
                         substitutions = emptyMap(),
                     )
                 } else {
-                    HookMatch.None
+                    return null
                 }
             }
             return when (canonSlot) {
                 is TACSlotPattern.Static -> slotEqual(canonSlot.index, canonSlot::offsetMatchesBits)
-                is TACSlotPattern.MapAccess, is TACSlotPattern.ArrayAccess, is TACSlotPattern.StructAccess -> HookMatch.None
+                is TACSlotPattern.MapAccess, is TACSlotPattern.ArrayAccess, is TACSlotPattern.StructAccess -> null
             }
         }
 
@@ -340,7 +374,7 @@ sealed class TACHookPattern : Serializable {
          * Return the [HookMatch] between [slot] and the set of [accessPaths] as inferred by the storage analysis.
          * @return a mapping from pattern variables to matched program variables
          */
-        fun matchSlotPattern(slot: TACSlotPattern, accessPaths: AccessPaths, displayPath: DisplayPath?): HookMatch {
+        fun matchSlotPattern(slot: TACSlotPattern, accessPaths: AccessPaths, displayPath: DisplayPath?): HookMatch.StorageMatch? {
             /**
              * Generate the [HookMatch] between [slot] and [accessPaths]. Note this assumes that [slot] and
              * [accessPaths] do indeed match, and simply fills in the appropriate [HookMatch.substitutions].
@@ -405,7 +439,7 @@ sealed class TACHookPattern : Serializable {
                     substitutions = emptyMap(),
                 )
             } else {
-                HookMatch.None
+                null
             }
         }
 
@@ -543,25 +577,96 @@ sealed class TACHookPattern : Serializable {
         }
     }
 
-    data class Create(val value: VMParam.Named) : TACHookPattern() {
-        override fun matches(cmd: TACCmd): HookMatch =
-            if (cmd is TACCmd.Simple.AssigningCmd) {
-                if (cmd.lhs.meta.containsKey(TACMeta.IS_CREATED_ADDRESS)) {
-                    HookMatch.Create().withSubstitution(
-                        value, cmd.lhs.asSym()
-                    )
-                } else {
-                    HookMatch.None
-                }
-            } else {
-                HookMatch.None
+    data class Create(val value: VMParam.Named) : TACHookPattern<HookMatch.Create>() {
+        override fun matches(lc: LTACCmd, context: CoreTACProgram): HookMatch.Create? {
+            if (lc.cmd !is TACCmd.Simple.AssigningCmd) {
+                return null
             }
+            if (!lc.cmd.lhs.meta.containsKey(TACMeta.IS_CREATED_ADDRESS)) {
+                return null
+            }
+            return HookMatch.Create(mapOf(value to lc.cmd.lhs.asSym().inject()))
+        }
+    }
+
+    data class EventHook(
+        val eventSignature: BigInteger,
+        val targetContractId: ContractId?,
+        val params: List<CVLHookPattern.Event.EventParam>
+    ) : TACHookPattern<HookMatch.Event>() {
+
+        companion object {
+            private val callStackKey = object : AnalysisCache.Key<TACCommandGraph, InlinedMethodCallStack> {
+                override fun createCached(graph: TACCommandGraph): InlinedMethodCallStack {
+                    return InlinedMethodCallStack(graph, includeCVLFunctions = false)
+                }
+            }
+        }
+        override fun matches(lc: LTACCmd, context: CoreTACProgram): HookMatch.Event? {
+            val cmd = lc.cmd
+            if(cmd !is TACCmd.Simple.LogCmd) {
+                return null
+            }
+            val logTopicCount = params.count {
+                it.indexed
+            } + 1
+            check(logTopicCount in 1 .. 4)
+            if(cmd.args.size != logTopicCount + 2) {
+                return null
+            }
+            /*
+             * Consequence of the above
+             */
+            check(cmd.args.size > 2) {
+                "log command argument underflow"
+            }
+            val topicSym = cmd.args[2]
+            if((topicSym !is TACSymbol.Const || topicSym.value != eventSignature) && (TACMeta.RESOLVED_LOG_TOPIC !in cmd.meta || cmd.meta[TACMeta.RESOLVED_LOG_TOPIC] != eventSignature)) {
+                return null
+            }
+            if(targetContractId != null) {
+                val stack = context.analysisCache.get(EventHook.callStackKey)
+                val thisContractId = InterContractCallResolver.ThisInference.Infer.inferAt(stack.activationRecordsAt(lc.ptr))
+                if(thisContractId != targetContractId) {
+                    return null
+                }
+            }
+            val subst = mutableMapOf<VMParam.Named, HookValue>()
+            var encodedOffset = BigInteger.ZERO
+            var indexedSymOffset = 3
+            for(p in params) {
+                val param = p.param
+                if(p.indexed) {
+                    if(param !is VMParam.Named) {
+                        indexedSymOffset++
+                    } else {
+                        subst[param] = HookValue.Direct(cmd.args[indexedSymOffset].asSym())
+                        indexedSymOffset++
+                    }
+                    continue
+                }
+                val encSize = (param.vmType as EVMTypeDescriptor).sizeAsEncodedMember()
+                if(param !is VMParam.Named) {
+                    encodedOffset += encSize
+                    continue
+                }
+                subst[param] = HookValue.EncodedEventParam(
+                    base = cmd.args[0],
+                    length = cmd.args[1],
+                    offset = encodedOffset,
+                    memoryBase = cmd.memBaseMap
+                )
+                encodedOffset += encSize
+            }
+            return HookMatch.Event(subst, TACKeyword.ADDRESS.toVar(lc.ptr.block.getCallId()))
+        }
+
     }
 
     /**
      * Populated using [CVLHookProcessor]
      */
-    sealed class OpcodeHook : TACHookPattern()
+    sealed class OpcodeHook : TACHookPattern<HookMatch.OpcodeMatch>()
 
     companion object {
         /**
@@ -691,7 +796,7 @@ sealed class TACHookPattern : Serializable {
                 }
             }
 
-        fun cvlHookPatternToTACHookPattern(pattern: CVLHookPattern, scope: CVLScope, contracts: List<IContractClass>): TACHookPattern {
+        fun cvlHookPatternToTACHookPattern(pattern: CVLHookPattern, scope: CVLScope, contracts: List<IContractClass>): TACHookPattern<*> {
             return when (pattern) {
                 is CVLHookPattern.StoragePattern -> {
                     val loc = handleSlotPattern(
@@ -812,6 +917,18 @@ sealed class TACHookPattern : Serializable {
                         )
                         is Returndatasize -> vc.data.Returndatasize(pattern.value)
                     }
+                }
+
+                is CVLHookPattern.Event -> {
+                    TACHookPattern.EventHook(
+                        eventSignature = pattern.eventSignature,
+                        params = pattern.eventParams,
+                        targetContractId = pattern.contractName?.let { tgt ->
+                            contracts.find { con ->
+                                con.name == tgt.name
+                            }?.instanceId
+                        }
+                    )
                 }
             }
         }

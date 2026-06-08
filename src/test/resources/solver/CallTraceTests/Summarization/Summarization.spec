@@ -48,6 +48,7 @@ rule unresolvedExternalForcingDefaultCase {
     address target;
     bytes b;
     require(getToSummarizeFunctionSelector(e) != b);
+    require(b.length > 0 && b.length < 32) ;
     uint res = unresolvedExternalSummaryDefault(e, target, b);
     assert res == 5, "should fail";
 }

@@ -103,6 +103,11 @@ object CallGraphBuilder {
     @Treapable
     sealed class CalledContract : AmbiSerializable, TransformableVarEntity<CalledContract>, UniqueIdEntity<CalledContract> {
 
+        /**
+            Returns true iff this object references any of the given allocated IDs.
+         */
+        abstract fun referencesAllocatedIds(ids: Set<Pair<Allocator.Id, Int>>): Boolean
+
         interface WithStorageReadId {
             val storageReadId: Int
         }
@@ -118,6 +123,17 @@ object CallGraphBuilder {
                 return this
             }
             override fun hashCode() = treapHashObject(this)
+            override fun referencesAllocatedIds(ids: Set<Pair<Allocator.Id, Int>>) = false
+        }
+
+        /**
+         * The callee address was read from an immutable variable that is not linked.
+         * [immutableName] is the name of the immutable field in [hostContractId].
+         */
+        @KSerializable
+        data class UnresolvedImmutable(val immutableName: String, val hostContractId: BigInteger) : CalledContract() {
+            override fun mapId(f: (Any, Int, () -> Int) -> Int): CalledContract = this
+            override fun referencesAllocatedIds(ids: Set<Pair<Allocator.Id, Int>>) = false
         }
 
         /**
@@ -131,6 +147,8 @@ object CallGraphBuilder {
             override fun mapId(f: (Any, Int, () -> Int) -> Int): CalledContract {
                 return copy(orig = orig.mapId(f))
             }
+
+            override fun referencesAllocatedIds(ids: Set<Pair<Allocator.Id, Int>>) = orig.referencesAllocatedIds(ids)
         }
 
         sealed interface WithContractId{
@@ -139,6 +157,8 @@ object CallGraphBuilder {
 
         @KSerializable
         sealed class FullyResolved : WithContractId, CalledContract() {
+
+            override fun referencesAllocatedIds(ids: Set<Pair<Allocator.Id, Int>>) = false
 
             @KSerializable
             data class ConstantAddress(
@@ -153,7 +173,8 @@ object CallGraphBuilder {
             @KSerializable
             data class StorageLink(
                 override val contractId: BigInteger,
-                @GeneratedBy(Allocator.Id.STORAGE_READ) override val storageReadId: Int
+                @GeneratedBy(Allocator.Id.STORAGE_READ) override val storageReadId: Int,
+                val wildcardCovered: Boolean = false
             ) : FullyResolved(), WithStorageReadId, RemapperEntity<CalledContract> {
                 override fun mapId(f: (Any, Int, () -> Int) -> Int): CalledContract {
                     return this
@@ -185,6 +206,7 @@ object CallGraphBuilder {
          */
         @KSerializable
         data class SymbolicInput(val inputArg: TACSymbol.Var?, val offset: BigInteger) : CalledContract() {
+            override fun referencesAllocatedIds(ids: Set<Pair<Allocator.Id, Int>>) = false
 
             override fun transformSymbols(f: (TACSymbol.Var) -> TACSymbol.Var): CalledContract = copy(inputArg = inputArg?.let(f))
 
@@ -199,11 +221,14 @@ object CallGraphBuilder {
          */
         @GenerateRemapper
         @KSerializable
-        data class SymbolicOutput(@GeneratedBy(Allocator.Id.CALL_SUMMARIES) val which: Int, val offset: BigInteger) : CalledContract(), RemapperEntity<CalledContract>
+        data class SymbolicOutput(@GeneratedBy(Allocator.Id.CALL_SUMMARIES) val which: Int, val offset: BigInteger) : CalledContract(), RemapperEntity<CalledContract> {
+            override fun referencesAllocatedIds(ids: Set<Pair<Allocator.Id, Int>>) = (Allocator.Id.CALL_SUMMARIES to which) in ids
+        }
 
         @KSerializable
         @GenerateRemapper
         data class InternalFunctionSummaryOutput(@GeneratedBy(Allocator.Id.INTERNAL_CALL_SUMMARY) val which: Int, val ordinal: Int): CalledContract(), RemapperEntity<CalledContract> {
+            override fun referencesAllocatedIds(ids: Set<Pair<Allocator.Id, Int>>) = (Allocator.Id.INTERNAL_CALL_SUMMARY to which) in ids
             override fun transformSymbols(f: (TACSymbol.Var) -> TACSymbol.Var): CalledContract {
                 return this
             }
@@ -211,19 +236,23 @@ object CallGraphBuilder {
 
         @GenerateRemapper
         @KSerializable
-        data class UnresolvedRead(@GeneratedBy(Allocator.Id.STORAGE_READ) override val storageReadId: Int) : CalledContract(), RemapperEntity<CalledContract>, WithStorageReadId
+        data class UnresolvedRead(@GeneratedBy(Allocator.Id.STORAGE_READ) override val storageReadId: Int) : CalledContract(), RemapperEntity<CalledContract>, WithStorageReadId {
+            override fun referencesAllocatedIds(ids: Set<Pair<Allocator.Id, Int>>) = (Allocator.Id.STORAGE_READ to storageReadId) in ids
+        }
 
         @KSerializable
         sealed class CreatedReference : CalledContract() {
-
             /** The call is to newly-created contract with an unknown address */
             @GenerateRemapper
             @KSerializable
-            data class Unresolved(@GeneratedBy(Allocator.Id.CONTRACT_CREATION) val createId: Int) : CreatedReference(), RemapperEntity<CalledContract>
+            data class Unresolved(@GeneratedBy(Allocator.Id.CONTRACT_CREATION) val createId: Int) : CreatedReference(), RemapperEntity<CalledContract> {
+                override fun referencesAllocatedIds(ids: Set<Pair<Allocator.Id, Int>>) = (Allocator.Id.CONTRACT_CREATION to createId) in ids
+            }
 
             /** The call is to a newly-created contract with address [tgtConntractId]*/
             @KSerializable
             data class Resolved(val tgtConntractId: BigInteger) : CreatedReference() {
+                override fun referencesAllocatedIds(ids: Set<Pair<Allocator.Id, Int>>) = false
                 override fun mapId(f: (Any, Int, () -> Int) -> Int): CalledContract {
                     return this
                 }
@@ -347,6 +376,7 @@ object CallGraphBuilder {
         data class InternalSummaryOutput(val which: Int, val offset: Int) : SymbolicAddress()
 
         data class ImmutableReference(val address: BigInteger) : SymbolicAddress()
+        data class UnresolvedImmutable(val immutableName: String) : SymbolicAddress()
         data class LibraryAddress(val contractId: BigInteger) : SymbolicAddress()
         fun lift() = StorageSet.Set(setOf(this))
 
@@ -2351,13 +2381,23 @@ object CallGraphBuilder {
                         if (o1 != null && o2 != null) {
                             val o2Const = constantValueAt(o2, ltacCmd)
                             val o1StorageSlot = (st.storageSlots[o1] as? StorageSet.Set)?.slots?.singleOrNull()
-                            if (o2Const != null && o2Const in powersOf2 && o1StorageSlot != null && o1StorageSlot is SymbolicAddress.ConstantSlot) {
-                                val rightShiftFactor = o2Const.lowestSetBit.toBigInteger()
-                                st.storageSlots + (cmd.lhs to SymbolicAddress.ConstantSlot(
-                                    ltacCmd.ptr,
-                                    o1StorageSlot.number,
-                                    rightShiftFactor
-                                ).lift())
+                            if (o2Const != null && o2Const in powersOf2 && o1StorageSlot != null) {
+                                when (o1StorageSlot) {
+                                    is SymbolicAddress.ConstantSlot -> {
+                                        val rightShiftFactor = o2Const.lowestSetBit.toBigInteger()
+                                        st.storageSlots + (cmd.lhs to SymbolicAddress.ConstantSlot(
+                                            o1StorageSlot.readLocation,
+                                            o1StorageSlot.number,
+                                            rightShiftFactor
+                                        ).lift())
+                                    }
+                                    // Packed struct fields: the Div extracts a value from the same storage slot.
+                                    // Propagate the UnresolvedRead so the callee can still be resolved via link matching.
+                                    is SymbolicAddress.UnresolvedRead -> {
+                                        st.storageSlots + (cmd.lhs to o1StorageSlot.lift())
+                                    }
+                                    else -> st.storageSlots - cmd.lhs
+                                }
                             } else {
                                 st.storageSlots - cmd.lhs
                             }
@@ -2366,6 +2406,20 @@ object CallGraphBuilder {
                         }
                     } else if(rhsOpaqueIdentityRemoved is TACExpr.Sym.Var && rhsOpaqueIdentityRemoved.s.meta.find(TACBasicMeta.IMMUTABLE_LINK) != null) {
                         st.storageSlots + (cmd.lhs to SymbolicAddress.ImmutableReference(rhsOpaqueIdentityRemoved.s.meta.find(TACBasicMeta.IMMUTABLE_LINK)!!).lift())
+                    } else if(rhsOpaqueIdentityRemoved is TACExpr.Sym.Var && TACBasicMeta.IS_IMMUTABLE in rhsOpaqueIdentityRemoved.s.meta) {
+                        // Non-constant immutable: check spec-level immutable links
+                        val specTargets = rhsOpaqueIdentityRemoved.s.meta.find(TACBasicMeta.IMMUTABLE_NAME)
+                            ?.let { m.getContainingContract().resolvedLinks.immutables[it] }
+                        if (!specTargets.isNullOrEmpty()) {
+                            st.storageSlots + (cmd.lhs to StorageSet.Set(specTargets.mapToSet { SymbolicAddress.ImmutableReference(it) }))
+                        } else {
+                            val name = rhsOpaqueIdentityRemoved.s.meta.find(TACBasicMeta.IMMUTABLE_NAME)
+                            if (name != null) {
+                                st.storageSlots + (cmd.lhs to SymbolicAddress.UnresolvedImmutable(name).lift())
+                            } else {
+                                st.storageSlots - cmd.lhs
+                            }
+                        }
                     } else if(rhsOpaqueIdentityRemoved is TACExpr.SimpleHash &&
                         rhsOpaqueIdentityRemoved.hashFamily.isContractCreation) {
                         st.storageSlots + (cmd.lhs to SymbolicAddress.CreatedContract(ltacCmd.ptr).lift())
@@ -3019,7 +3073,7 @@ object CallGraphBuilder {
                                 it as? StorageSet.Set
                             }?.slots?.monadicMap {
                                 it
-                            }?.map {
+                            }?.flatMap {
                                 resolver().symbolicToResolved(
                                     it
                                 )
@@ -3250,44 +3304,45 @@ object CallGraphBuilder {
              */
             fun symbolicToResolved(
                 symbolic: SymbolicAddress,
-            ): CalledContract {
+            ): Set<CalledContract> {
                 val hostAddress = m.getContainingContract().instanceId
                 return when (symbolic) {
-                    SymbolicAddress.THIS -> CalledContract.FullyResolved.SelfLink(hostAddress)
+                    SymbolicAddress.THIS -> setOf(CalledContract.FullyResolved.SelfLink(hostAddress))
                     is SymbolicAddress.ConstantSlot -> {
-                        val address = (m.getContainingContract() as? IContractWithSource)?.src?.let { sdc ->
-                            sdc.state[symbolic.number]
-                        }
+                        val targets = m.getContainingContract().resolvedLinks.scalars[LinkAccessPath.Root(symbolic.number)]
                         val id = resolution.getStorageNumbering(symbolic.readLocation)
-                        if (address != null) {
-                            CalledContract.FullyResolved.StorageLink(address, id)
+                        if (!targets.isNullOrEmpty()) {
+                            targets.mapToSet { CalledContract.FullyResolved.StorageLink(it, id) }
                         } else {
-                            CalledContract.UnresolvedRead(id)
+                            setOf(CalledContract.UnresolvedRead(id))
                         }
                     }
-                    is SymbolicAddress.CallDataInput -> CalledContract.SymbolicInput(
+                    is SymbolicAddress.CallDataInput -> setOf(CalledContract.SymbolicInput(
                         offset = symbolic.offset,
                         inputArg = symbolic.inputArg
-                    )
+                    ))
                     is SymbolicAddress.ReturnData -> resolution.getCallNumbering(symbolic.callLocation).let { which ->
-                        CalledContract.SymbolicOutput(
+                        setOf(CalledContract.SymbolicOutput(
                             which = which,
                             offset = symbolic.offset
-                        )
+                        ))
                     }
                     is SymbolicAddress.UnresolvedRead -> {
                         g.elab(symbolic.readLocation).maybeNarrow<TACCmd.Simple.AssigningCmd.WordLoad>()?.takeIf {
                             it.cmd.loc is TACSymbol.Var
-                        } ?: return CalledContract.Unresolved
+                        } ?: return setOf(CalledContract.Unresolved)
                         val id = resolution.getStorageNumbering(symbolic.readLocation)
-                        CalledContract.UnresolvedRead(id)
+                        setOf(CalledContract.UnresolvedRead(id))
                     }
                     is SymbolicAddress.CreatedContract -> {
-                        CalledContract.CreatedReference.Unresolved(g.elab(symbolic.where).cmd.meta.find(TACMeta.CONTRACT_CREATION) ?: return CalledContract.Unresolved)
+                        val creation = g.elab(symbolic.where).cmd.meta.find(TACMeta.CONTRACT_CREATION)
+                            ?: return setOf(CalledContract.Unresolved)
+                        setOf(CalledContract.CreatedReference.Unresolved(creation))
                     }
-                    is SymbolicAddress.ImmutableReference -> CalledContract.FullyResolved.ImmutableReference(symbolic.address)
-                    is SymbolicAddress.LibraryAddress -> CalledContract.FullyResolved.ConstantAddress(symbolic.contractId)
-                    is SymbolicAddress.InternalSummaryOutput -> CalledContract.InternalFunctionSummaryOutput(which = symbolic.which, ordinal = symbolic.offset)
+                    is SymbolicAddress.ImmutableReference -> setOf(CalledContract.FullyResolved.ImmutableReference(symbolic.address))
+                    is SymbolicAddress.UnresolvedImmutable -> setOf(CalledContract.UnresolvedImmutable(symbolic.immutableName, hostAddress))
+                    is SymbolicAddress.LibraryAddress -> setOf(CalledContract.FullyResolved.ConstantAddress(symbolic.contractId))
+                    is SymbolicAddress.InternalSummaryOutput -> setOf(CalledContract.InternalFunctionSummaryOutput(which = symbolic.which, ordinal = symbolic.offset))
                 }
             }
         }
@@ -3355,7 +3410,7 @@ object CallGraphBuilder {
             }?.toMap()
             val x = returnedContracts.entries.mapNotNull { (k, v) ->
                 (v as? StorageSet.Set)?.slots?.singleOrNull()?.let {
-                    resolver.symbolicToResolved(it)
+                    resolver.symbolicToResolved(it).singleOrNull()
                 }?.let {
                     k to it
                 }
@@ -3418,9 +3473,9 @@ object CallGraphBuilder {
                     } ?: run {
                         st.storageSlots[callCore.to]?.let {
                             it as? StorageSet.Set
-                        }?.slots?.map {
+                        }?.slots?.flatMapToSet {
                             resolver.symbolicToResolved(it)
-                        }?.toSet() ?: setOf(CalledContract.Unresolved)
+                        } ?: setOf(CalledContract.Unresolved)
                     }
                 }
             }

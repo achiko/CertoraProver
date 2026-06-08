@@ -215,7 +215,10 @@ private fun sbfProgramWithMocksToSbfCfgs(
 
 private fun postProcessCFG(cfg: MutableSbfCFG, debugSymbols: DebugSymbols, globals: GlobalVariables) {
     cfg.addDebugInformation(debugSymbols)
+    cfg.addSourceSegments(debugSymbols)
     cfg.verify(false, "[before postProcessCFG]")
+    replaceAbortWithError(cfg)
+    cfg.verify(false, "[after replace always-fail functions with assert(false)]")
     //do not call simplify before calling lowerBranchesIntoAssume
     cfg.lowerBranchesIntoAssume()
     cfg.verify(false, "[after lowering branches into assumes]")

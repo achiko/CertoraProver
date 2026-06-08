@@ -210,14 +210,13 @@ class ElfFileView(private val reader: ElfFile, private val parser: ElfParser): I
 }
 
 class ElfDisassembler(pathName: String) {
-    private val file: File
+    private val file: File = File(pathName)
     private val reader: ElfFile
     private val parser: ElfParser
     private val globalsSymTable: ElfFileView
     private val debugSymbols: DebugSymbols
 
     init {
-        this.file = File(pathName)
         this.file.inputStream().let {
             // from can throw a java.io.IOException
             this.reader = ElfFile.from(it)
@@ -430,10 +429,14 @@ class ElfDisassembler(pathName: String) {
      * We check that all symbols [rules] exist and translate only the section ".text"
      * while resolving those calls that can be resolved via relocation.
      **/
-    fun read(rules: Set<String>): BytecodeProgram {
-        val entryPoints = rules.map { rule ->
-            reader.getELFSymbol(rule) ?: throw SolanaError("Cannot find $rule. " +
-                "Please make sure that there is function $rule and it has the attribute \"#[rule]\"")
+    fun read(rules: Set<String>): ReadResult {
+        val missingFunctions = mutableSetOf<String>()
+        val entryPoints = rules.mapNotNull { rule ->
+            val symbol = reader.getELFSymbol(rule)
+            if (symbol == null) {
+                missingFunctions.add(rule)
+            }
+            symbol
         }
 
         val (sectionStart, instructions) = processTextSection()
@@ -449,6 +452,8 @@ class ElfDisassembler(pathName: String) {
         val initGlobals = GlobalVariables(globalsSymTable)
         val globals = populateGlobalVariables(initGlobals)
         sbfLogger.info {"Found architecture: ${globals.elf.sbpfVersion()}"}
-        return BytecodeProgram(entryOffsetMap, functionMan, instructions, globals, relocatedCalls, this.debugSymbols)
+        return ReadResult(BytecodeProgram(entryOffsetMap, functionMan, instructions, globals, relocatedCalls, this.debugSymbols), missingFunctions)
     }
 }
+
+data class ReadResult(val bytecode: BytecodeProgram, val missingFunctions: Set<String>)

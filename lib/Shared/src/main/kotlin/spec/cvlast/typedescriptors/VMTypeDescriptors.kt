@@ -128,6 +128,14 @@ sealed class FromVMContext: AmbiSerializable {
         override fun hashCode(): Int = hashObject(this)
     }
 
+
+    @KSerializable
+    object EventHookBinding : FromVMContext() {
+        override fun getVisitor() = Visitor::eventHookBindingContext
+        private fun readResolve(): Any = EventHookBinding
+        override fun hashCode(): Int = hashObject(this)
+    }
+
     /**
      * An interface to provide conversion logic for each context. Defines the possible conversion functions that can be
      * "visited" when converting from a [VMTypeDescriptor] to a [CVLType.PureCVLType]
@@ -140,6 +148,10 @@ sealed class FromVMContext: AmbiSerializable {
             return this.returnValueContext()
         }
         fun internalSummaryArgBindingContext(): CollectingResult<ITypeDescriptorConverter<IProgramOutput, IInternalSummaryInput, ICVLDataOutput>, String>
+
+        fun eventHookBindingContext(): CollectingResult<ITypeDescriptorConverter<IProgramOutput, IExternalOutputBuffer, ICVLDataOutput>, String> {
+            return this.returnValueContext()
+        }
     }
 }
 

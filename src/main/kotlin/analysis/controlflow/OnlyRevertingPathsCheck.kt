@@ -25,12 +25,40 @@ import vc.data.tacexprutil.asConstOrNull
 import java.math.BigInteger
 
 /**
- * Returns true iff there is _no_ path in [tac] from a root to a sink that does not go through any C where
- * C is either "lastReverted true", "assume false", or "loop condition assert false" command.
- * NB: this is just a static check on the graph level, i.e. we are not checking if there is a "feasible"
- * non-reverting path.
+ * Result of [checkIfAllPathsAreLastReverted].
  */
-fun checkIfAllPathsAreLastReverted(tac: CoreTACProgram): Boolean {
+enum class AllPathsRevertedResult {
+    /** At least one path from a root to a sink does not go through any reverting command. */
+    NON_REVERTING_PATH_EXISTS,
+
+    /**
+     * All paths from roots to sinks go through a reverting command, and no loop was detected in the TAC.
+     */
+    ALL_REVERT_DEFINITIVE,
+
+    /**
+     * All paths from roots to sinks go through a reverting command, but the TAC contains at least one
+     * loop (as indicated by a [TACMeta.END_LOOP] annotation). Hence, it could be the case that increasing
+     * the loop unrolling bound (`--loop_iter`) might introduce a non-reverting path.
+     */
+    ALL_REVERT_BUT_LOOP_PRESENT,
+}
+
+/**
+ * Checks whether all paths in [tac] from a root to a sink go through a reverting command.
+ * A reverting command is one of:
+ *  - assignment `lastReverted = true`
+ *  - `assume false`
+ *  - `assert false` tagged with [TACMeta.SYNTHETIC_LOOP_END] (loop-bound cutoff without `-assumeUnwindCond`)
+ *
+ * NB: this is a static check on the graph level; feasibility of paths is not considered.
+ *
+ * If all visible paths revert but the TAC contains a loop ([TACMeta.END_LOOP] annotation is present),
+ * returns [AllPathsRevertedResult.ALL_REVERT_BUT_LOOP_PRESENT] rather than
+ * [AllPathsRevertedResult.ALL_REVERT_DEFINITIVE], because the finite loop unrolling bound may have hidden
+ * non-reverting paths that would appear with a higher bound.
+ */
+fun checkIfAllPathsAreLastReverted(tac: CoreTACProgram): AllPathsRevertedResult {
     fun isReverting(cmd: TACCmd.Simple): Boolean =
         (cmd as? TACCmd.Simple.AssigningCmd.AssignExpCmd)?.lhs?.meta?.get(TACSymbol.Var.KEYWORD_ENTRY)?.name == CVLKeywords.lastReverted.keyword &&
             (cmd.rhs as? TACExpr.Sym)?.getAsConst() == BigInteger.ONE
@@ -50,7 +78,7 @@ fun checkIfAllPathsAreLastReverted(tac: CoreTACProgram): Boolean {
         if (!isReverting(cmd) && !isLoopAssertFalse(cmd) && !isAssumeFalse(cmd)) {
             val succ = tac.analysisCache.graph.succ(ptr)
             if (succ.isEmpty()) { //sink
-                return false
+                return AllPathsRevertedResult.NON_REVERTING_PATH_EXISTS
             } else {
                 succ.forEach {
                     if (visited.add(it)) {
@@ -60,5 +88,11 @@ fun checkIfAllPathsAreLastReverted(tac: CoreTACProgram): Boolean {
             }
         }
     }
-    return true;
+
+    val hasLoop = tac.parallelLtacStream().anyMatch { it.cmd.maybeAnnotation(TACMeta.END_LOOP) }
+    return if (hasLoop) {
+        AllPathsRevertedResult.ALL_REVERT_BUT_LOOP_PRESENT
+    } else {
+        AllPathsRevertedResult.ALL_REVERT_DEFINITIVE
+    }
 }

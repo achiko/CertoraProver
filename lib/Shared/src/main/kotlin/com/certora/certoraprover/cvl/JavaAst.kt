@@ -19,6 +19,7 @@ package com.certora.certoraprover.cvl
 
 import com.certora.certoraprover.cvl.formatter.ITokenTable
 import datastructures.stdcollections.*
+import spec.CVLKeywords
 import spec.TypeResolver
 import spec.cvlast.*
 import spec.cvlast.CVLScope.Item.CVLFunctionScopeItem
@@ -72,6 +73,7 @@ data class Ast(
         val contractImports          = importedContracts.map { it.kotlinize(resolver, scope) }.flatten()
         val specImports              = importedSpecFiles.map { it.kotlinize(resolver, scope) }.flatten()
         val overrideDeclarations     = astBaseBlocks.kotlinizeOverrideDeclarations(resolver, scope)
+        val linkEntries              = kotlinizeLinkBlocks(astBaseBlocks.linkBlocks, resolver, scope)
         return bindMany(
             methodBlockAnnotation,
             useDeclarations,
@@ -84,7 +86,8 @@ data class Ast(
             contractImports,
             specImports,
             overrideDeclarations,
-            contractAliasesFlattened
+            contractAliasesFlattened,
+            linkEntries
         ) {
             CVLAst(
                 methodBlockAnnotation.force(),
@@ -100,6 +103,7 @@ data class Ast(
                 specImports.force(),
                 overrideDeclarations.force(),
                 scope,
+                linkEntries.force(),
             ).lift()
         }
     }
@@ -120,6 +124,7 @@ data class AstBaseBlocks(
     val macros: MutableList<MacroDefinition> = mutableListOf(),
     val hooks: MutableList<Hook> = mutableListOf(),
     val methodsBlocks: MutableList<MethodsBlock> = mutableListOf(),
+    val linkBlocks: MutableList<LinkBlock> = mutableListOf(),
 
     val useImportedRuleDeclarations: MutableList<UseDeclaration.ImportedRule> = mutableListOf(),
     val useImportedInvariantDeclarations: MutableList<UseDeclaration.ImportedInvariant> = mutableListOf(),
@@ -152,6 +157,57 @@ data class AstBaseBlocks(
         val _funs = overrideFunctionDeclarations.kotlinize(resolver, scope)
         map(_defs, _funs) { defs, funs -> OverrideDeclarations(defs, funs) }
     }
+}
+
+data class LinkEntry(
+    val range: Range.Range,
+    val path: Exp,
+    val targets: List<String>
+)
+
+data class LinkBlock(
+    val range: Range.Range,
+    val entries: List<LinkEntry>
+)
+
+private fun kotlinizeLinkBlocks(
+    linkBlocks: List<LinkBlock>,
+    resolver: TypeResolver,
+    scope: CVLScope,
+): CollectingResult<List<UnresolvedCVLLinkEntry>, CVLError> =
+    linkBlocks.flatMap { it.entries }.map { kotlinizeLinkEntry(it, resolver, scope) }.flatten()
+
+/** Walks the parser Exp tree (right-recursive) to extract source alias and field path segments. */
+private fun kotlinizeLinkEntry(
+    entry: LinkEntry,
+    resolver: TypeResolver,
+    scope: CVLScope,
+): CollectingResult<UnresolvedCVLLinkEntry, CVLError> = collectingErrors {
+    var current: Exp = entry.path
+    val segments = buildList {
+        while (current !is VariableExp) {
+            when (val c = current) {
+                is FieldSelectExp -> { add(CVLLinkPathSegment.Field(c.m).lift()); current = c.b }
+                is ArrayDerefExp -> {
+                    if (c.indx is VariableExp && c.indx.id == CVLKeywords.wildCardExp.keyword) {
+                        add(CVLLinkPathSegment.Wildcard.lift())
+                    } else {
+                        val kotlinizedIndex = c.indx.kotlinize(resolver, scope)
+                        add(kotlinizedIndex.map { CVLLinkPathSegment.UncheckedIndex(it) })
+                    }
+                    current = c.ad
+                }
+                else -> error("Unreachable: unexpected ${c.javaClass.simpleName} in link path")
+            }
+        }
+    }.asReversed()
+    val resolvedSegments = bind(segments.flatten())
+    UnresolvedCVLLinkEntry(
+        sourceContractAlias = (current as VariableExp).id,
+        fieldPath = resolvedSegments,
+        targets = entry.targets.toSet(),
+        range = entry.range
+    )
 }
 
 data class CVLFunction @JvmOverloads constructor(

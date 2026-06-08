@@ -17,82 +17,89 @@
 
 package sbf
 
-import config.ConfigScope
+import config.*
 import sbf.cfg.*
 import sbf.testing.SbfTestDSL
 import org.junit.jupiter.api.*
+import org.junit.jupiter.params.*
+import org.junit.jupiter.params.provider.*
 
 class TACMulTest {
 
     /** `5 x 7` **/
-    @Test
-    fun test01() {
-        val cfg = SbfTestDSL.makeCFG("test1") {
-            bb(0) {
-                r1 = r10
-                BinOp.SUB(r1, 100)
-                r2 = 5
-                r3 = 0
-                r4 = 7
-                r5 = 0
-                "__multi3"()
-                r2 = r1[0]
-                r3 = r1[8]
-                assert(CondOp.EQ(r2, 35UL))
-                assert(CondOp.EQ(r3, 0UL))
-                exit()
+    @ParameterizedTest
+    @ValueSource(booleans = [true, false])
+    fun test01(sound: Boolean) {
+        ConfigScope(SolanaConfig.TACSoundSignedMath, sound).use {
+            val cfg = SbfTestDSL.makeCFG("test1") {
+                bb(0) {
+                    r1 = r10
+                    BinOp.SUB(r1, 100)
+                    r2 = 5
+                    r3 = 0
+                    r4 = 7
+                    r5 = 0
+                    "__multi3"()
+                    r2 = r1[0]
+                    r3 = r1[8]
+                    assert(CondOp.EQ(r2, 35UL))
+                    assert(CondOp.EQ(r3, 0UL))
+                    exit()
+                }
             }
+
+            cfg.normalize()
+            cfg.verify(true)
+
+            println("$cfg")
+            val tacProg = toTAC(cfg)
+            println(dumpTAC(tacProg))
+            Assertions.assertEquals(true, verify(tacProg))
         }
-
-        cfg.normalize()
-        cfg.verify(true)
-
-        println("$cfg")
-        val tacProg = toTAC(cfg)
-        println(dumpTAC(tacProg))
-        Assertions.assertEquals(true, verify(tacProg))
     }
 
     /** -5 x 7 **/
-    @Test
-    fun test02() {
-        val cfg = SbfTestDSL.makeCFG("test2") {
-            bb(0) {
-                r1 = r10
-                BinOp.SUB(r1, 100)
-                r2 = -5
-                r3 = 0
-                r4 = 7
-                r5 = 0
-                "__multi3"()
-                r7 = r1[0]
-                r8 = r1[8]
+    @ParameterizedTest
+    @ValueSource(booleans = [true, false])
+    fun test02(sound: Boolean) {
+        ConfigScope(SolanaConfig.TACSoundSignedMath, sound).use {
+            val cfg = SbfTestDSL.makeCFG("test2") {
+                bb(0) {
+                    r1 = r10
+                    BinOp.SUB(r1, 100)
+                    r2 = -5
+                    r3 = 0
+                    r4 = 7
+                    r5 = 0
+                    "__multi3"()
+                    r7 = r1[0]
+                    r8 = r1[8]
 
-                // At this point, r7 is the low 64-bits and r8 is the high 64-bits of 128-bit multiplication.
-                // r7 = 0xffff_ffff_ffff_ffdd
-                // r6 = 0x0000_0000_0000_0006
+                    // At this point, r7 is the low 64-bits and r8 is the high 64-bits of 128-bit multiplication.
+                    // r7 = 0xffff_ffff_ffff_ffdd
+                    // r6 = 0x0000_0000_0000_0006
 
-                // This assertion does not hold due to prover's use of 256-bit arithmetic.
-                // Hack to avoid -35 to be signed extended to 256 bits by the prover.
-                r1 = -35
-                "CVT_mask_64"()
-                assert(CondOp.EQ(r7, r0))
-                // This assertion is expected to be verified
-                assert(CondOp.EQ(r8, 6UL))
-                exit()
+                    // This assertion does not hold due to prover's use of 256-bit arithmetic.
+                    // Hack to avoid -35 to be signed extended to 256 bits by the prover.
+                    r1 = -35
+                    "CVT_mask_64"()
+                    assert(CondOp.EQ(r7, r0))
+                    // This assertion is expected to be verified
+                    assert(CondOp.EQ(r8, 6UL))
+                    exit()
+                }
             }
+
+            cfg.normalize()
+            cfg.verify(true)
+
+            println("$cfg")
+
+            val tacProg = toTAC(cfg)
+            println(dumpTAC(tacProg))
+            Assertions.assertEquals(true, verify(tacProg))
         }
-
-        cfg.normalize()
-        cfg.verify(true)
-
-        println("$cfg")
-
-        val tacProg = toTAC(cfg)
-        println(dumpTAC(tacProg))
-        Assertions.assertEquals(true, verify(tacProg, report = true))
     }
-
 
     /** `5 x 7` with `-solanaTACMathInt false` **/
     //@Test
@@ -300,7 +307,7 @@ class TACMulTest {
         ConfigScope(SolanaConfig.UseTACMathInt, true).use {
             val tacProg = toTAC(cfg)
             println(dumpTAC(tacProg))
-            Assertions.assertEquals(true, verify(tacProg, report = true))
+            Assertions.assertEquals(true, verify(tacProg))
         }
     }
 }

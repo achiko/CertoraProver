@@ -79,8 +79,7 @@ sealed class RustType(@Transient private val byte_size: ULong = 8U) : HasKSerial
     sealed interface PrimitiveType
     companion object {
         @PollutesGlobalState
-        fun intializeRegistry(typeNodes: Map<RustTypeId, RustType>) {
-            require(typeRegistry.isEmpty()){"The type registry should be initialized only once."}
+        fun initializeRegistry(typeNodes: Map<RustTypeId, RustType>) {
             typeRegistry = typeNodes;
         }
 

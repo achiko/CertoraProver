@@ -17,6 +17,8 @@
 
 package sbf.tac
 
+import datastructures.stdcollections.listOf
+import sbf.SolanaConfig
 import sbf.callgraph.SolanaFunction
 import sbf.cfg.LocatedSbfInstruction
 import sbf.cfg.SbfInstruction
@@ -40,9 +42,26 @@ class Clock(mkFreshIntVar: (prefix: String)-> TACSymbol.Var) {
     private val leaderScheduleEpoch: TACSymbol.Var = mkFreshIntVar("clock.leader_schedule_epoch")
     private val unixTimestamp: TACSymbol.Var = mkFreshIntVar("clock.unix_timestamp")
 
+    private val getClockResult: TACSymbol.Var = mkFreshIntVar("clock.get_clock_result")
+
+
+    /**
+     * Emit TAC code
+     * ```
+     *  get_clock_result = havoc
+     * ```
+     */
+    context(SbfCFGToTAC<TNum, TOffset, TFlags>)
+    internal fun<TNum : INumValue<TNum>, TOffset : IOffset<TOffset>, TFlags: IPTANodeFlags<TFlags>> init() =
+        if (SolanaConfig.TACClockDeterministicReturn.get()) {
+            listOf(havoc(getClockResult))
+        } else {
+            listOf()
+        }
+
     /** Emit TAC code for `sol_set_clock_sysvar` **/
     context(SbfCFGToTAC<TNum, TOffset, TFlags>)
-    fun<TNum : INumValue<TNum>, TOffset : IOffset<TOffset>, TFlags: IPTANodeFlags<TFlags>> set(
+    internal fun<TNum : INumValue<TNum>, TOffset : IOffset<TOffset>, TFlags: IPTANodeFlags<TFlags>> set(
         locInst: LocatedSbfInstruction
     ): List<TACCmd.Simple> {
         val inst = locInst.inst
@@ -60,20 +79,23 @@ class Clock(mkFreshIntVar: (prefix: String)-> TACSymbol.Var) {
         cmds += assign(leaderScheduleEpoch, v4.asSym())
         cmds += assign(unixTimestamp, v5.asSym())
 
-        val r0 = exprBuilder.mkVar(SbfRegister.R0_RETURN_VALUE)
-        cmds += TACCmd.Simple.AssigningCmd.AssignHavocCmd(r0)
+        val r0 = sbfTacB.mkVar(SbfRegister.R0)
+        cmds += havoc(r0)
         cmds += Debug.endFunction("sol_set_clock_sysvar")
         return cmds
     }
 
     /** Emit TAC code for `sol_get_clock_sysvar` **/
     context(SbfCFGToTAC<TNum, TOffset, TFlags>)
-    fun<TNum : INumValue<TNum>, TOffset : IOffset<TOffset>, TFlags: IPTANodeFlags<TFlags>> get(
+    internal fun<TNum : INumValue<TNum>, TOffset : IOffset<TOffset>, TFlags: IPTANodeFlags<TFlags>> get(
         locInst: LocatedSbfInstruction
     ): List<TACCmd.Simple> {
         val inst = locInst.inst
         check(inst is SbfInstruction.Call)
-        check(SolanaFunction.from(inst.name) == SolanaFunction.SOL_GET_CLOCK_SYSVAR)
+        check(
+            SolanaFunction.from(inst.name) == SolanaFunction.SOL_GET_CLOCK_SYSVAR ||
+            SolanaFunction.from(inst.name) == SolanaFunction.CVT_SOL_GET_CLOCK_SYSVAR
+        )
 
         val cmds = mutableListOf<TACCmd.Simple>()
         val tacVars = getTACVariables(locInst, cmds)
@@ -81,18 +103,21 @@ class Clock(mkFreshIntVar: (prefix: String)-> TACSymbol.Var) {
         val (v1, v2, v3, v4, v5) = tacVars
         cmds += Debug.startFunction("sol_get_clock_sysvar")
         cmds += assign(v1, slot.asSym())
-        cmds += inRange(v1, BigInteger.ZERO, BigInteger.TWO.pow(64) - BigInteger.ONE)
+        cmds += inRange(v1, BigInteger.ZERO ..< BigInteger.TWO.pow(64))
         cmds += assign(v2, epochStartTimestamp.asSym())
-        cmds += inRange(v1, BigInteger.ZERO, BigInteger.TWO.pow(64) - BigInteger.ONE)
+        cmds += inRange(v2, BigInteger.ZERO ..< BigInteger.TWO.pow(64))
         cmds += assign(v3, epoch.asSym())
-        cmds += inRange(v1, BigInteger.ZERO, BigInteger.TWO.pow(64) - BigInteger.ONE)
+        cmds += inRange(v3, BigInteger.ZERO ..< BigInteger.TWO.pow(64))
         cmds += assign(v4, leaderScheduleEpoch.asSym())
-        cmds += inRange(v1, BigInteger.ZERO, BigInteger.TWO.pow(64) - BigInteger.ONE)
+        cmds += inRange(v4, BigInteger.ZERO ..< BigInteger.TWO.pow(64))
         cmds += assign(v5, unixTimestamp.asSym())
-        cmds += inRange(v1, BigInteger.ZERO, BigInteger.TWO.pow(64) - BigInteger.ONE)
-
-        val r0 = exprBuilder.mkVar(SbfRegister.R0_RETURN_VALUE)
-        cmds += TACCmd.Simple.AssigningCmd.AssignHavocCmd(r0)
+        cmds += inRange(v5, BigInteger.ZERO ..< BigInteger.TWO.pow(64))
+        val r0 = sbfTacB.mkVar(SbfRegister.R0)
+        cmds += if (SolanaConfig.TACClockDeterministicReturn.get()) {
+            assign(r0, getClockResult.asSym())
+        } else {
+            havoc(r0)
+        }
         cmds += Debug.endFunction("sol_get_clock_sysvar")
         return cmds
     }

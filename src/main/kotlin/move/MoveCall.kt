@@ -46,3 +46,5 @@ data class MoveCall(
         "at ${it.fileName}:${it.lineNumber}: ${it.content.lines().firstOrNull()?.escapeQuotes()}"
     }
 }
+
+fun PersistentStack<MoveCall>.format() = joinToString(" ← ") { it.callee.toString() }

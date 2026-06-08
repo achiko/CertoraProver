@@ -20,7 +20,6 @@ package analysis.opt.bytemaps
 import analysis.CmdPointer
 import analysis.numeric.linear.ReducedLinearTerm
 import analysis.opt.ConstantPropagatorAndSimplifier
-import analysis.opt.intervals.ExtBig.Companion.asExtBig
 import analysis.opt.intervals.Intervals
 import analysis.opt.intervals.IntervalsCalculator
 import analysis.opt.intervals.IntervalsCalculator.Companion.intervalOfTag
@@ -29,7 +28,6 @@ import analysis.split.Ternary.Companion.isPowOf2Minus1
 import datastructures.memoized
 import datastructures.stdcollections.*
 import evm.EVM_BITWIDTH256
-import evm.MAX_EVM_INT256
 import evm.twoToThe
 import tac.Tag
 import utils.*
@@ -37,7 +35,11 @@ import utils.ModZm.Companion.inBounds
 import utils.ModZm.Companion.onesZerosMask
 import vc.data.*
 import vc.data.tacexprutil.asConst
+import vc.data.tacexprutil.asConstOrNull
+import vc.data.tacexprutil.asSym
+import vc.data.tacexprutil.asVarOrNull
 import vc.data.tacexprutil.isConst
+import vc.data.tacexprutil.isSym
 import java.math.BigInteger
 
 /**
@@ -94,6 +96,8 @@ class TermFactory(val code: CoreTACProgram, val intervals: IntervalsCalculator?)
      * [ptr2] should be reachable from [ptr1], and the atoms of [t1] are before [ptr1] in the program. Same for
      * [t2] and [ptr2].
      *
+     * This is a more accurate version of [diff] below, which does not use pointers.
+     *
      * Note that since the atoms of our terms are [UniqueVar], we should have no need for [ptr1] and [ptr2] - two different
      * atoms are considered different variables. However, using these pointers, we can sometimes get more accurate
      * answers.
@@ -120,7 +124,7 @@ class TermFactory(val code: CoreTACProgram, val intervals: IntervalsCalculator?)
             val relevant2 = defs2 containsAll defs
 
             /** If we can't figure out anything about `v` from [ptr1] and [ptr2] */
-            fun default() = if(intervals == null ) {
+            fun default() = if (intervals == null) {
                 intervalOfTag(v.tag)
             } else {
                 defs.monadicMap(intervals::getLhs)
@@ -145,7 +149,7 @@ class TermFactory(val code: CoreTACProgram, val intervals: IntervalsCalculator?)
                 }
             } else {
                 when {
-                    relevant1 && relevant2-> at1 intersect at2
+                    relevant1 && relevant2 -> at1 intersect at2
                     relevant1 -> at1
                     relevant2 -> at2
                     else -> default()
@@ -156,10 +160,32 @@ class TermFactory(val code: CoreTACProgram, val intervals: IntervalsCalculator?)
         }.mod(Tag.Bit256)
     }
 
+
+    /**
+     * Returns the possible values for `[t1] - [t2]`
+     */
+    fun diff(t1: Term, t2: Term): Intervals {
+        checkNotNull(intervals)
+        return (t1.support + t2.support).fold(Intervals(t1.c - t2.c)) { acc, unique ->
+            val coef1 = t1.literals[unique] ?: BigInteger.ZERO
+            val coef2 = t2.literals[unique] ?: BigInteger.ZERO
+            if (coef1 == coef2) {
+                return@fold acc
+            }
+            val (v, defs) = unique
+
+            val i = defs.monadicMap(intervals::getLhs)
+                ?.reduce(Intervals::union)
+                ?: intervalOfTag(v.tag)
+
+            i * (coef1 - coef2) + acc
+        }.mod(Tag.Bit256)
+    }
+
     /** `true` for surely equal, `false` for surely no, and `null` otherwise */
     fun areEqual(ptr1: CmdPointer, t1: Term, ptr2: CmdPointer, t2: Term): Boolean? {
         if (intervals == null) {
-            return when((t1 - t2).asConstOrNull) {
+            return when ((t1 - t2).asConstOrNull) {
                 null -> null
                 BigInteger.ZERO -> true
                 else -> false
@@ -173,15 +199,11 @@ class TermFactory(val code: CoreTACProgram, val intervals: IntervalsCalculator?)
         }
     }
 
-    private val Intervals.isNonNeg
-        get() = isNotEmpty() && this isLe MAX_EVM_INT256.asExtBig
-
-    private val Intervals.isPos
-        get() = 0 !in this && isNonNeg
 
     /**
      * Is [query] (at [queryPtr]) is inside [[low], [high]) (interpreted at [rangeQuery]`),
      * `true` is surely inside, `false` if surely outside, and `null` otherwise.
+     * This is a more accurate version of [isInside] below, which does not use pointers.
      */
     fun isInside(queryPtr: CmdPointer, query: Term, rangeQuery: CmdPointer, low: Term, high: Term): Boolean? {
         if (intervals == null) {
@@ -190,11 +212,51 @@ class TermFactory(val code: CoreTACProgram, val intervals: IntervalsCalculator?)
         val lowMinusQuery = diff(rangeQuery, low, queryPtr, query)
         val highMinusQuery = diff(rangeQuery, high, queryPtr, query)
         return when {
-            (-lowMinusQuery).mod(Tag.Bit256).isNonNeg && highMinusQuery.isPos -> true
-            (lowMinusQuery).isPos || (-highMinusQuery).mod(Tag.Bit256).isNonNeg -> false
+            (-lowMinusQuery).mod(Tag.Bit256).isSurely2sNonNeg() && highMinusQuery.isSurely2sPos() -> true
+            (lowMinusQuery).isSurely2sPos() || (-highMinusQuery).mod(Tag.Bit256).isSurely2sNonNeg() -> false
             else -> null
         }
     }
+
+    /**
+     * Is [low1]..[low1]+[len1] contained in [low2]..[low2]+[len2],
+     * `true` is surely inside, `false` if they are surely non-intersecting, and `null` otherwise.
+     */
+    fun isContainedIn(low1: Term, len1: Term, low2: Term, len2: Term): Boolean? {
+        if (intervals == null) {
+            return null
+        }
+        val high1 = low1 + len1
+        val high2 = low2 + len2
+        return when {
+            // low2 <= low1 && high2 >= high1
+            diff(low1, low2).isSurely2sNonNeg() && diff(high1, high2).isSurely2sNonPos() -> true
+
+            // high1 <= low2
+            diff(high1, low2).isSurely2sNonPos() -> false
+
+            // low1 >= high2
+            diff(low1, high2).isSurely2sNonNeg() -> false
+
+            else -> null
+        }
+    }
+
+    /** is [query] in `[[low], [low] + [length])`. Yes, No, or don't know.. */
+    fun isInside(query: Term, low: Term, length: Term): Boolean? {
+        if (intervals == null) {
+            return null
+        }
+        val high = low + length
+        val lowMinusQuery = diff(low, query)
+        val highMinusQuery = diff(high, query)
+        return when {
+            (-lowMinusQuery).mod(Tag.Bit256).isSurely2sNonNeg() && highMinusQuery.isSurely2sPos() -> true
+            (lowMinusQuery).isSurely2sPos() || (-highMinusQuery).mod(Tag.Bit256).isSurely2sNonNeg() -> false
+            else -> null
+        }
+    }
+
 
     /** this gets filled up externally. */
     val lhsTerm = mutableMapOf<CmdPointer, Term>()
@@ -258,7 +320,7 @@ class TermFactory(val code: CoreTACProgram, val intervals: IntervalsCalculator?)
                 .let { subTerms ->
                     val (consts, nonConsts) = subTerms.partition { it.isConst }
                     val coef = consts.map { it.asConst }.reduceOrNull(BigInteger::multiply) ?: BigInteger.ONE
-                    when(nonConsts.size) {
+                    when (nonConsts.size) {
                         0 -> Term(coef)
                         1 -> nonConsts.single() * coef
                         else -> null
@@ -282,10 +344,10 @@ class TermFactory(val code: CoreTACProgram, val intervals: IntervalsCalculator?)
             }
 
             is TACExpr.BinOp.BWAnd -> rec.let { (t1, t2) ->
-                val (term, mask) = when (t1.isConst to t2.isConst) {
+                val (term, mask, nonMaskOp) = when (t1.isConst to t2.isConst) {
                     true to true -> return@let Term(t1.asConst and t2.asConst)
-                    true to false -> t2 to t1.asConst
-                    false to true -> t1 to t2.asConst
+                    true to false -> Triple(t2, t1.asConst, o2)
+                    false to true -> Triple(t1, t2.asConst, o1)
                     else -> return@let null
                 }
                 // for `t & 0xff`, if `t % 256` is a constant, we can calculate it. Otherwise no?
@@ -295,10 +357,21 @@ class TermFactory(val code: CoreTACProgram, val intervals: IntervalsCalculator?)
                 // turns out we commonly have `0xf...ffffe0` masks (equivalent to `mod 32`). Many of these can
                 // be evaluated because the masked term is know to be a multiple of 32.
                 onesZerosMask(mask)?.let { (low, high) ->
-                    runIf(high == EVM_BITWIDTH256) {
-                        modIfConstant(term, twoToThe(low))?.let { term - it }
+                    when {
+                        high == EVM_BITWIDTH256 ->
+                            modIfConstant(term, twoToThe(low))?.let { term - it }
+
+                        intervals != null -> {
+                            val i = intervals.getS(ptr, nonMaskOp)
+                            runIf(i.isNotEmpty() && i isLt twoToThe(high)) {
+                                modIfConstant(term, twoToThe(low))?.let { term - it }
+                            }
+                        }
+
+                        else -> null
                     }
                 }
+
             }
 
             is TACExpr.AnnotationExp<*> -> expr(ptr, o)
@@ -314,6 +387,33 @@ class TermFactory(val code: CoreTACProgram, val intervals: IntervalsCalculator?)
 
             else -> null
         }
+    }
+
+
+    /**
+     * checks if this map-definition is of the sort `[i -> i < boundVar ? * : 0]`. If not it returns null.
+     * Then it tries to evaluate it on `i := [query]`, and return the evaluation of the condition `i < boundVar`, or
+     * null if there is no clear answer.
+     */
+    fun isQueryInsideMapDefBound(
+        defPtr: CmdPointer,
+        param: TACSymbol.Var,
+        definition: TACExpr,
+        query: Query
+    ): Boolean? {
+        val upperBound = if (
+            definition is TACExpr.TernaryExp.Ite &&
+            definition.i is TACExpr.BinRel.Lt &&
+            definition.i.o1.asVarOrNull == param &&
+            definition.i.o2.isSym &&
+            definition.t is TACExpr.Unconstrained &&
+            definition.e.asConstOrNull == BigInteger.ZERO
+        ) {
+            definition.i.o2.asSym
+        } else {
+            return null
+        }
+        return isInside(query.ptr, query.t, defPtr, Term(0), rhsTerm(defPtr, upperBound)!!)
     }
 
 }

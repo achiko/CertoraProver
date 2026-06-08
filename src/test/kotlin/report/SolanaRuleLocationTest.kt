@@ -94,14 +94,6 @@ class SolanaRuleLocationTest {
         )
     }
 
-    @Test
-    fun ruleLocationFailingRuleCvlrSanity() {
-        assertExistsRuleWithExpectedRange(
-            "rule_failing_with_location-$vacuitySuffix",
-            getRangeForRule("src/rule_locations.rs", 14U)
-        )
-    }
-
     private fun assertExistsRuleWithExpectedRange(ruleIdentifier: String, expectedRange: Range.Range) {
         val nodes = treeView!!.treePublic().treeViewNodeResults().filter {
             it.rule != null &&

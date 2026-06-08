@@ -18,27 +18,54 @@
 package sbf
 
 import cli.SanityValues
-import datastructures.stdcollections.listOf
+import datastructures.stdcollections.*
 import rules.RuleCheckResult
 import rules.TwoStageRound
 import rules.sanity.TACSanityChecks
 import sbf.tac.solanaOptimize
+import spec.cvlast.RuleIdentifier
+import spec.cvlast.SpecType.Single.GeneratedFromBasicRule.MultiAssertSubRule.AssertsOnly
+import spec.cvlast.SpecType.Single.GeneratedFromBasicRule.SanityRule.VacuityCheck
 import spec.rules.EcosystemAgnosticRule
+import utils.isSuccessAnd
 import vc.data.CoreTACProgram
 import verifier.EncodedRule
 import verifier.VerificationFlow
-
 
 data class SolanaEncodedRule(override val rule: EcosystemAgnosticRule, override val code: CoreTACProgram) : EncodedRule<EcosystemAgnosticRule>
 typealias SolanaEncodeResult = Result<SolanaEncodedRule>
 
 class SolanaVerificationFlow(
-    val elfFile: String
+    elfFile: String
 ) : VerificationFlow<EcosystemAgnosticRule>() {
+    private val rules: List<SolanaEncodeResult> = solanaSbfToTAC(elfFile)
+
+    // a manual impl of associate to ensure no duplicates
+    private val baseRuleToVacuityCheck: Map<RuleIdentifier, SolanaEncodedRule> = buildMap {
+        val rules = this@SolanaVerificationFlow.rules
+
+        for (result in rules) {
+            val encodedRule = result.getOrNull() ?: continue
+            val ruleType = encodedRule.rule.ruleType as? VacuityCheck ?: continue
+            val baseRuleIdentifier = ruleType.getOriginatingRule().ruleIdentifier
+
+            val old = this.put(baseRuleIdentifier, encodedRule)
+            check(old == null) { "for rule: `$baseRuleIdentifier`: found more than one generated vacuity check" }
+        }
+    }
+
+    private fun nonVacuityRules() = this.rules.filter { result ->
+        result.isFailure || result.isSuccessAnd { it.rule.ruleType !is VacuityCheck }
+    }
+
     override val webReportMainContractName: String = "SolanaMainProgram"
 
-    override suspend fun buildRules(): Collection<SolanaEncodeResult> {
-        return solanaSbfToTAC(elfFile)
+    /**
+     * note that work here was already done upfront, on class construction
+     * (and either way, it was blocking. so no benefit from async)
+     */
+    override suspend fun buildRules(): List<SolanaEncodeResult> {
+        return this.nonVacuityRules()
     }
 
     /**
@@ -51,11 +78,30 @@ class SolanaVerificationFlow(
         completedEncodedRule: EncodedRule<EcosystemAgnosticRule>,
         completedResult: RuleCheckResult.Leaf
     ): List<Result<EncodedRule<EcosystemAgnosticRule>>> {
-        return if(!completedEncodedRule.rule.isGenerated){
-            TACSanityChecks(vacuityCheckLevel = SanityValues.ADVANCED).generateRules(completedEncodedRule.rule, completedEncodedRule.code, completedResult)
-        } else {
-            listOf()
+        val rule = completedEncodedRule.rule
+        val code = completedEncodedRule.code
+
+        if (rule.isGenerated) {
+            return emptyList()
         }
+
+        val tacSanityRules = TACSanityChecks(SanityValues.ADVANCED).generateRules(rule, code, completedResult)
+
+        val vacuityCheck = if (
+            completedResult is RuleCheckResult.Single
+            && completedResult.result == completedResult.expectedResult()
+        ) {
+            val ruleIdentifier = if (rule.ruleType is AssertsOnly) {
+                rule.ruleIdentifier.parentIdentifier
+            } else {
+                rule.ruleIdentifier
+            }
+            baseRuleToVacuityCheck[ruleIdentifier]?.let { Result.success(it) }
+        } else {
+            null
+        }
+
+        return tacSanityRules + listOfNotNull(vacuityCheck)
     }
 
     override fun finalizeForRound(

@@ -12,14 +12,8 @@ compiler translates Rust source code into SBF programs—a
 Solana-specific variant of eBPF (extended Berkeley Packet
 Filter)—which are encoded in ELF format.
 
-
-Historical Context: When development began, Clang compiled to eBPF. In
-late 2022, Solana began migrating to SBF (Solana Binary Format),
-introducing multiple target architectures including `sbfv1` and `sbfv2`.
-
-
 Architecture Support: While the `--arch flag` from `cargo-certora-sbf` accepts multiple architecture options,
-this front-end currently supports only `sbfv1`/`sbf`:
+this front-end currently supports only `sbfv1`/`sbf`, `sbpf v0` and `sbpf v1`:
 
 ```
 --arch <ARCH>
@@ -29,8 +23,8 @@ this front-end currently supports only `sbfv1`/`sbf`:
 
       Possible values:
       - sbf: sbfv1 from platform tools <= 1.41 [SUPPORTED]
-      - v0:  SBPF v0 [NOT SUPPORTED]
-      - v1:  SBPF v1 [NOT SUPPORTED]
+      - v0:  SBPF v0 [SUPPORTED]
+      - v1:  SBPF v1 [SUPPORTED]
       - v2:  SBPF v2 [NOT SUPPORTED]
       - v3:  SBPF v3 [NOT SUPPORTED]
 ```

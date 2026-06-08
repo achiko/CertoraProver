@@ -30,7 +30,6 @@ import analysis.TACCommandDataflowAnalysis
 import analysis.TACCommandGraph
 import analysis.numeric.IntValue
 import analysis.numeric.simplequalifiedint.SimpleQualifiedInt
-import analysis.numeric.simplequalifiedint.SimpleQualifiedIntState
 import analysis.pta.abi.UnindexedPartition
 import analysis.split.Ternary.Companion.isPowOf2
 import com.certora.collect.TreapMap
@@ -72,7 +71,6 @@ import vc.data.tacexprutil.asConst
 import wasm.analysis.WASM_STACK_DEC
 import wasm.analysis.WASM_STACK_INC
 import wasm.analysis.intervals.IntervalAnalysis
-//import wasm.analysis.intervals.IntervalAnalysis
 import wasm.impCfg.WASM_MEMORY_OP_WIDTH
 import java.math.BigInteger
 import java.util.concurrent.ConcurrentHashMap
@@ -426,10 +424,6 @@ private data class StackPointerState(
     }
 }
 
-private interface INumericAnalysis {
-    fun inState(ptr: CmdPointer): SimpleQualifiedIntState?
-}
-
 private class StackPointerAnalysis(graph: TACCommandGraph) : TACCommandDataflowAnalysis<StackPointerState>(
     graph,JoinLattice.ofJoin { x, y -> x.join(y) }, StackPointerState.initial, Direction.FORWARD
 ) {
@@ -445,12 +439,7 @@ private class StackPointerAnalysis(graph: TACCommandGraph) : TACCommandDataflowA
         } ?: Unit.toLeft()
     }
 
-    private val numeric: INumericAnalysis = object : INumericAnalysis {
-        private val intervalAnalysis = graph.cache[IntervalAnalysis]
-        override fun inState(ptr: CmdPointer): SimpleQualifiedIntState? =
-            // This should probably just be made the default for the interval analysis
-            intervalAnalysis.cachingInState(ptr)
-    }
+    private val numeric = graph.cache[IntervalAnalysis]
 
     /**
      * Consult the stack pointer state to see how to abstract the pointer

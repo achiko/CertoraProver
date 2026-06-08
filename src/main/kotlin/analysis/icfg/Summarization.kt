@@ -39,7 +39,11 @@ import spec.CVL
 import spec.CVLCompiler
 import spec.IWithSummaryInfo
 import utils.Range
+import analysis.storage.StorageAnalysis
+import analysis.storage.StorageAnalysisResult
+import spec.cvlast.SolidityContract
 import spec.cvlast.SpecCallSummary
+import tac.CallId
 import tac.DumpTime
 import utils.*
 import vc.data.*
@@ -59,7 +63,7 @@ object Summarization {
     private data class SummarizationContext(
         val withSummaries: IWithSummaryInfo,
         val scene: IScene,
-        val cvlCompiler: CVLCompiler?,
+        val cvlCompiler: CVLCompiler,
         val manager: InliningDecisionManager.PostStorageAnalysis
     ) : IWithSummaryInfo by withSummaries
 
@@ -160,7 +164,7 @@ object Summarization {
         code: CoreTACProgram,
         scene: IScene,
         summaries: IWithSummaryInfo,
-        cvlCompiler: CVLCompiler?
+        cvlCompiler: CVLCompiler
     ): CoreTACProgram {
         val manager = InliningDecisionManager.PostStorageAnalysis(
             scene = scene,
@@ -321,6 +325,7 @@ object Summarization {
                     is CallGraphBuilder.CalledContract.Invalidated,
                     is CallGraphBuilder.CalledContract.SymbolicInput,
                     is CallGraphBuilder.CalledContract.UnresolvedRead,
+                    is CallGraphBuilder.CalledContract.UnresolvedImmutable,
                     is CallGraphBuilder.CalledContract.Unresolved-> {
                         // nothing to do here linking wise
                     }
@@ -673,6 +678,8 @@ object Summarization {
          * Dispatch according to [summ]
          */
         data class Dispatcher(val summ: AppliedSummary.FromUserInput, val sigHash: BigInteger?) : DispatchSummary()
+
+        data class UnresolvedHarness(val harnessId: BigInteger) : DispatchSummary()
     }
 
     /**
@@ -717,6 +724,11 @@ object Summarization {
         val havocQueue = mutableListOf<QueuedSummary<ConcreteSummary.Havoc>>()
         val dispatchQueue = mutableListOf<QueuedSummary<DispatchSummary>>()
 
+        val unresolvedHarnessContract = if (Config.UseUnresolvedHarness.get()) {
+            scene.getContractOrNull(SolidityContract("CertoraUnresolvedHarness"))
+        } else {
+            null
+        }
         for (summ in needSummarization) {
             val currAddress = code.procedures.find {
                  it.callId == summ.ptr.block.calleeIdx
@@ -876,6 +888,12 @@ object Summarization {
                         currAddress = currAddress,
                         selectedSummary = DispatchSummary.LateInliningDispatcher(AppliedSummary.LateInliningDispatcher.specCallSumm)
                     ))
+                } else if (unresolvedHarnessContract != null && callSumm.callType != TACCallType.DELEGATE) {
+                    dispatchQueue.add(QueuedSummary(
+                        summaryCmd = summ,
+                        currAddress = currAddress,
+                        selectedSummary = DispatchSummary.UnresolvedHarness(unresolvedHarnessContract.instanceId)
+                    ))
                 } else {
                     havocQueue.add(QueuedSummary(
                         summaryCmd = summ,
@@ -943,6 +961,82 @@ object Summarization {
             modified = true
         }
         return ExternalSummarizationResult(patching.toCode(code), modified)
+    }
+
+    /**
+     * Redirect an unresolved call to the `CertoraUnresolvedHarness` contract's fallback.
+     * Writes the call context to the harness's storage slots:
+     *   0: original callee address, 1: caller's sender, 2: executing contract,
+     *   3: inSize, 4: outSize, 5: value, 6: gas.
+     * Then replaces the [CallSummary]'s callTarget so the existing inlining machinery
+     * picks it up in the next round.
+     */
+    context(SummarizationContext)
+    private fun redirectToUnresolvedHarness(
+        patching: SimplePatchingProgram,
+        summ: LTACCmdView<TACCmd.Simple.SummaryCmd>,
+        callSumm: CallSummary,
+        harnessId: BigInteger
+    ) {
+        val callIndex = summ.ptr.block.calleeIdx
+        val decls = mutableSetOf<TACSymbol.Var>()
+        val cmds = mutableListOf<TACCmd.Simple>()
+
+        // Find split storage variables for the harness, keyed by slot number
+        val storageInfo = scene.getStorageUniverse()[harnessId]
+        val storageVars = when (storageInfo) {
+            is StorageInfoWithReadTracker -> storageInfo.storageVariables.keys
+            is StorageInfo -> storageInfo.storageVariables
+            else -> emptySet()
+        }
+        val slotToVar = storageVars.mapNotNull { sv ->
+            val path = sv.meta.find(TACMeta.STABLE_STORAGE_PATH)
+            if (path is StorageAnalysisResult.NonIndexedPath.Root &&
+                path.base == StorageAnalysis.Base.STORAGE) {
+                path.slot to sv
+            } else {
+                null
+            }
+        }.toMap()
+
+        val slotBindings = listOf<Pair<String, (CallId, CallSummary) -> TACSymbol>>(
+            "callee"  to { _, cs -> cs.toVar },
+            "sender"  to { idx, _ -> TACKeyword.CALLER.toVar(idx) },
+            "address" to { idx, _ -> TACKeyword.ADDRESS.toVar(idx) },
+            "inSize"  to { _, cs -> cs.inSize },
+            "outSize" to { _, cs -> cs.outSize },
+            "value"   to { _, cs -> cs.valueVar },
+            "gas"     to { _, cs -> cs.gasVar },
+        )
+
+        for ((i, spec) in slotBindings.withIndex()) {
+            val (label, extract) = spec
+            val slotVar = slotToVar[i.toBigInteger()] ?: continue
+            val toBind = extract(callIndex, callSumm)
+            decls.add(slotVar)
+            (toBind as? TACSymbol.Var)?.let(decls::add)
+            cmds.add(TACCmd.Simple.LabelCmd("Bind $label"))
+            val displayPath = slotVar.meta.find(TACMeta.DISPLAY_PATHS)?.paths?.firstOrNull()
+            if (displayPath != null) {
+                cmds.add(SnippetCmd.EVMSnippetCmd.StorageSnippet.StoreSnippet(
+                    value = toBind,
+                    displayPath = displayPath,
+                    storageType = slotVar.meta.find(TACMeta.STORAGE_TYPE),
+                    contractInstance = harnessId,
+                    range = null,
+                ).toAnnotation())
+            }
+            cmds.add(TACCmd.Simple.AssigningCmd.AssignExpCmd(slotVar, toBind.asSym()))
+        }
+
+        // Replace callTarget to point to the harness contract
+        val modifiedCallSumm = callSumm.copy(
+            callTarget = setOf(
+                CallGraphBuilder.CalledContract.FullyResolved.ConstantAddress(harnessId)
+            )
+        )
+        cmds.add(TACCmd.Simple.SummaryCmd(summ = modifiedCallSumm, meta = summ.cmd.meta))
+        patching.replaceCommand(summ.ptr, CommandWithRequiredDecls(cmds, decls))
     }
 
     /**
@@ -1037,7 +1131,8 @@ object Summarization {
                     patching,
                     summ,
                     appliedSummary,
-                    methodCallStack
+                    methodCallStack,
+                    cvlCompiler
                 )
             }
         }
@@ -1073,7 +1168,8 @@ object Summarization {
                     summ = q.selectedSummary.summ,
                     appliedSummary = AppliedSummary.LateInliningDispatcher,
                     summAppReason = SummaryApplicationReason.SpecialReason("Late inlined method calls due to an (internal) dispatcher"),
-                    getCallersAtPointer = methodCallStack
+                    getCallersAtPointer = methodCallStack,
+                    cvlCompiler = cvlCompiler
                 )
             }
             DispatchSummary.OptimisticFallback -> {
@@ -1082,7 +1178,14 @@ object Summarization {
                     scene,
                     q.summaryCmd
                 ) { methodCallStack.iterateUpCallersMethodOnly(it) }
-
+            }
+            is DispatchSummary.UnresolvedHarness -> {
+                redirectToUnresolvedHarness(
+                    patching,
+                    q.summaryCmd,
+                    q.summaryCmd.cmd.summ as CallSummary,
+                    q.selectedSummary.harnessId
+                )
             }
         }
     }

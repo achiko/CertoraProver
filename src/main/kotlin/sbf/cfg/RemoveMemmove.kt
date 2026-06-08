@@ -18,11 +18,13 @@
 package sbf.cfg
 
 import sbf.callgraph.SolanaFunction
+import sbf.sbfLogger
 
 /**
  *  Replace `memmove` with `memcpy` instructions
  **/
 fun removeMemmove(cfg: MutableSbfCFG) {
+    val replacedInstructions = mutableListOf<LocatedSbfInstruction>()
     for (b in cfg.getMutableBlocks().values) {
         for (locInst in b.getLocatedInstructions()) {
             val inst = locInst.inst
@@ -31,7 +33,18 @@ fun removeMemmove(cfg: MutableSbfCFG) {
                 val newMetaData = inst.metaData.plus(SbfMeta.REMOVED_MEMMOVE())
                 val newMemcpyInst =  SolanaFunction.toCallInst(SolanaFunction.SOL_MEMCPY, newMetaData)
                 b.replaceInstruction(locInst, newMemcpyInst)
+                replacedInstructions.add(locInst)
             }
+        }
+    }
+    if (replacedInstructions.isNotEmpty()) {
+        sbfLogger.warn {
+            "Unsupported intrinsic — memmove modeled as memcpy. If source\n" +
+            "and destination regions overlap, verification results cannot be\n" +
+            "trusted. Ensure regions are non-overlapping or treat results with\n" +
+            "caution.\n" +
+            "Replaced instructions:\n" +
+            replacedInstructions.joinToString("\n") { "  $it" }
         }
     }
 }

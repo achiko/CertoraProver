@@ -18,7 +18,6 @@
 
 package debugger
 
-import config.*
 import datastructures.stdcollections.*
 import org.junit.jupiter.api.Assertions.*
 import report.calltrace.printer.*
@@ -212,6 +211,90 @@ fun Statement.assertContainsVariableWithConcreteStringValue(variableName: String
 fun Statement.assertContainsVariableWithConcreteValue(variableName: String, value: Int) {
     val expectedStringVal = "0x${value.toString(16)}"
     assertContainsVariableWithConcreteStringValue(variableName, expectedStringVal)
+}
+
+/**
+ * Defines the supported operations for invariant assertions.
+ */
+enum class Operand {
+    PLUS, MINUS, MULTIPLY, DIVIDE, MODULO,
+    EQUALS, NOT_EQUALS, LESS_THAN, GREATER_THAN, LESS_EQUAL, GREATER_EQUAL
+}
+
+/**
+ * Asserts that an invariant holds between two variables using the specified operand.
+ *
+ * This method evaluates that the operation `variable1 operand variable2` equals the expected result.
+ * For example, assertInvariant("x", "y", InvariantOperand.PLUS, 10) checks that x + y == 10.
+ *
+ * @param left The name of the first variable
+ * @param right The name of the second variable
+ * @param operand The operation to perform
+ * @param expectedResult The expected result of the operation
+ */
+fun Statement.assertInvariant(left: String, right: String, operand: Operand, expectedResult: Int) {
+    val foundVariables = variablesAtTopOfStack()
+
+    // Ensure both variables exist
+    assertTrue(left in foundVariables) { "Expected to find variable $left in variable set ${foundVariables.keys} at stack $this" }
+    assertTrue(right in foundVariables) { "Expected to find variable $right in variable set ${foundVariables.keys} at stack $this" }
+
+    val value1Str = foundVariables[left]
+    val value2Str = foundVariables[right]
+
+    // Parse hex values (assuming format like "0x1a" or similar)
+    val value1 = parseHexValue(value1Str, left)
+    val value2 = parseHexValue(value2Str, right)
+
+    // Perform the operation
+    val result = when (operand) {
+        Operand.PLUS -> value1 + value2
+        Operand.MINUS -> value1 - value2
+        Operand.MULTIPLY -> value1 * value2
+        Operand.DIVIDE -> {
+            assertTrue(value2 != 0) { "Division by zero: variable $right has value 0" }
+            value1 / value2
+        }
+        Operand.MODULO -> {
+            assertTrue(value2 != 0) { "Modulo by zero: variable $right has value 0" }
+            value1 % value2
+        }
+        Operand.EQUALS -> if (value1 == value2) 1 else 0
+        Operand.NOT_EQUALS -> if (value1 != value2) 1 else 0
+        Operand.LESS_THAN -> if (value1 < value2) 1 else 0
+        Operand.GREATER_THAN -> if (value1 > value2) 1 else 0
+        Operand.LESS_EQUAL -> if (value1 <= value2) 1 else 0
+        Operand.GREATER_EQUAL -> if (value1 >= value2) 1 else 0
+    }
+
+    assertTrue(result == expectedResult) {
+        "Invariant failed: $left ($value1) $operand $right ($value2) = $result, but expected $expectedResult. " +
+        "Variable values: $left = $value1Str, $right = $value2Str"
+    }
+}
+
+/**
+ * Parses a hex value from a string representation, handling various formats.
+ *
+ * @param valueStr The string representation of the value (e.g., "0x1a", "10", etc.)
+ * @param variableName The name of the variable (for error messages)
+ * @return The parsed integer value
+ */
+private fun parseHexValue(valueStr: String?, variableName: String): Int {
+    if (valueStr == null) {
+        throw IllegalArgumentException("Variable $variableName has null value")
+    }
+
+    return try {
+        when {
+            valueStr.startsWith("0x") -> valueStr.substring(2).toInt(16)
+            valueStr.startsWith("0X") -> valueStr.substring(2).toInt(16)
+            valueStr.all { it.isDigit() || it in 'a'..'f' || it in 'A'..'F' } -> valueStr.toInt(16)
+            else -> valueStr.toInt()
+        }
+    } catch (e: NumberFormatException) {
+        throw IllegalArgumentException("Could not parse value '$valueStr' for variable $variableName as an integer", e)
+    }
 }
 
 fun List<Statement>.toLineNumberRepresentation(withVariables: Boolean = true) = this.mapIndexed { idx, el ->

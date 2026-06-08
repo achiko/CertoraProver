@@ -52,14 +52,16 @@ class TACGlobalInitializerTest {
     }
 
     private fun verify(cfg: SbfCFG, expectedResult: Boolean) {
-        println("$cfg")
         val globals = GlobalVariables(MockedElfFileView)
         val memSummaries = MemorySummaries()
         val prog = MutableSbfCallGraph(listOf(cfg), setOf(cfg.getName()), globals)
         ConfigScope(SolanaConfig.AggressiveGlobalDetection, true).use {
             ConfigScope(SolanaConfig.AddMemLayoutAssumptions, false).use {
-                val newGlobals = runGlobalInferenceAnalysis(prog, memSummaries).getGlobals()
-                val tacProg = toTAC(cfg, globals = newGlobals)
+                val newCallgraph = runGlobalInferenceAnalysis(prog, memSummaries)
+                val newGlobals = newCallgraph.getGlobals()
+                val newCfg = newCallgraph.getCallGraphRootSingleOrFail()
+                println(newCfg)
+                val tacProg = toTAC(newCfg, globals = newGlobals)
                 println(dumpTAC(tacProg))
                 Assertions.assertEquals(expectedResult, verify(tacProg))
             }
@@ -112,7 +114,6 @@ class TACGlobalInitializerTest {
         }
     }
 
-
     @Test
     fun test1() {
         verify(cfg1, true)
@@ -123,4 +124,34 @@ class TACGlobalInitializerTest {
         verify(cfg2, true)
     }
 
+    @Test
+    // Test global initialization when the global is accessed via sol_memcmp_ instead of individual loads.
+    // r1 points to the global, r2 to heap; after assuming memcmp returns 0 (equal),
+    // the heap values must match the global's ELF-initialized content.
+    fun test3() {
+        val cfg = SbfTestDSL.makeCFG("test3") {
+            bb(0) {
+                r1 = 32
+                "__rust_alloc"()
+                r2 = r0
+                r1 = 671456
+                r3 = 32
+                "sol_memcmp_"()
+                assume(CondOp.EQ(r0, 0))
+                r4 = r2[0]
+                assert(CondOp.EQ(r4, 8932874100621648450))
+                r4 = r2[8]
+                assert(CondOp.EQ(r4, -757275789396826516))
+                r4 = r2[16]
+                assert(CondOp.EQ(r4, -8340305312106788954))
+                r4 = r2[24]
+                assert(CondOp.EQ(r4, 3673485114838409523))
+                exit()
+            }
+        }
+        verify(cfg, true)
+    }
+
 }
+
+

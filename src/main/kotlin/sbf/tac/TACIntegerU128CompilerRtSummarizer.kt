@@ -17,11 +17,12 @@
 
 package sbf.tac
 
+import sbf.*
 import sbf.cfg.*
 import sbf.disassembler.SbfRegister
-import vc.data.*
 import datastructures.stdcollections.*
 import sbf.domains.*
+import vc.data.TACCmd
 
 /**
  * Summarize 128-bits integer compiler-rt functions.
@@ -29,69 +30,80 @@ import sbf.domains.*
  * Not all functions are currently summarized.
  **/
 
-/** Default implementation using 256-bit numbers **/
+/** Default implementation using bit-fixed numbers **/
 open class SummarizeIntegerU128CompilerRt<TNum : INumValue<TNum>, TOffset : IOffset<TOffset>, TFlags: IPTANodeFlags<TFlags>> {
 
     context(SbfCFGToTAC<TNum, TOffset, TFlags>)
-    open fun summarizeMulti3(args: U128BinaryOperands): List<TACCmd.Simple> {
+    internal open fun summarizeMulti3(args: U128BinaryOperands): List<TACCmd.Simple> {
         val cmds = mutableListOf<TACCmd.Simple>()
         applyU128BinaryOperation(args, cmds) { res, _, x, y ->
-            cmds.add(assign(res, TACExpr.Vec.Mul(listOf(x.asSym(), y.asSym()))))
+            cmds += assign(res, sbfTacB { x.asSym() mul128 y.asSym() })
         }
         return cmds
     }
 
     context(SbfCFGToTAC<TNum, TOffset, TFlags>)
-    open fun summarizeUDivti3(args: U128BinaryOperands): List<TACCmd.Simple> {
+    internal open fun summarizeUDivti3(args: U128BinaryOperands): List<TACCmd.Simple> {
         val cmds = mutableListOf<TACCmd.Simple>()
         applyU128BinaryOperation(args, cmds) { res, _, x, y ->
-            cmds.add(assign(res, TACExpr.BinOp.Div(x.asSym(), y.asSym())))
+            cmds += assign(res, sbfTacB { x.asSym() div128 y.asSym() })
         }
         return cmds
     }
 
     context(SbfCFGToTAC<TNum, TOffset, TFlags>)
-    open fun summarizeDivti3(args: U128BinaryOperands): List<TACCmd.Simple> {
-        return listOf(
-            assign(args.resLow, TACExpr.BinOp.SDiv(args.xLow, args.yLow)),
-            TACCmd.Simple.AssigningCmd.AssignHavocCmd(args.resHigh)
-        )
+    internal open fun summarizeDivti3(args: U128BinaryOperands): List<TACCmd.Simple> {
+        return when (sbfTacB) {
+            // In "lazy masking" mode, we summarize __divti3...oddly.  Rather than try to abstract this behavior into
+            // TACExprBuilder, it's easier to just handle it directly here.
+            is LazyMaskSbfTACBuilder -> listOf(
+                assign(args.resLow, sbfTacB { args.xLow sDiv args.yLow }),
+                havoc(args.resHigh)
+            )
+            else -> {
+                mutableListOf<TACCmd.Simple>().also { cmds ->
+                    applyU128BinaryOperation(args, cmds) { res, _, x, y ->
+                        cmds += assign(res, sbfTacB { x.asSym() sDiv128 y.asSym() })
+                    }
+                }
+            }
+        }
     }
 
     context(SbfCFGToTAC<TNum, TOffset, TFlags>)
-    open fun summarizeAshlti3(args: U128ShiftOperands): List<TACCmd.Simple> {
+    internal open fun summarizeAshlti3(args: U128ShiftOperands): List<TACCmd.Simple> {
         val cmds = mutableListOf<TACCmd.Simple>()
         applyU128ShiftOperation(args, cmds) { res, x, shift ->
-            cmds.add(assign(res, exprBuilder.mask128(TACExpr.BinOp.ShiftLeft(x.asSym(), shift))))
+            cmds += assign(res, sbfTacB { x.asSym() shiftL128 shift })
         }
         return cmds
     }
 
     context(SbfCFGToTAC<TNum, TOffset, TFlags>)
-        open fun summarizeAshrti3(args: U128ShiftOperands): List<TACCmd.Simple> {
+    internal open fun summarizeAshrti3(args: U128ShiftOperands): List<TACCmd.Simple> {
         val cmds = mutableListOf<TACCmd.Simple>()
         applyU128ShiftOperation(args, cmds) { res, x, shift ->
-            cmds.add(assign(res, TACExpr.BinOp.ShiftRightArithmetical(exprBuilder.mask128(x.asSym()), shift)))
+            cmds += assign(res, sbfTacB { x.asSym() shiftRArith128 shift })
         }
         return cmds
     }
 
     context(SbfCFGToTAC<TNum, TOffset, TFlags>)
-    fun getArgsFromU128BinaryCompilerRt(locInst: LocatedSbfInstruction): U128BinaryOperands? {
+    internal fun getArgsFromU128BinaryCompilerRt(locInst: LocatedSbfInstruction): U128BinaryOperands? {
         val (resLow, resHigh, overflow) = getResFrom128(locInst) ?: return null
-        val xLowE = exprBuilder.mkExprSym(Value.Reg(SbfRegister.R2_ARG))
-        val xHighE = exprBuilder.mkExprSym(Value.Reg(SbfRegister.R3_ARG))
-        val yLowE = exprBuilder.mkExprSym(Value.Reg(SbfRegister.R4_ARG))
-        val yHighE = exprBuilder.mkExprSym(Value.Reg(SbfRegister.R5_ARG))
+        val xLowE = sbfTacB.mkExprSym(Value.Reg(SbfRegister.R2))
+        val xHighE = sbfTacB.mkExprSym(Value.Reg(SbfRegister.R3))
+        val yLowE = sbfTacB.mkExprSym(Value.Reg(SbfRegister.R4))
+        val yHighE = sbfTacB.mkExprSym(Value.Reg(SbfRegister.R5))
         return U128BinaryOperands(resLow.tacVar, resHigh.tacVar, overflow?.tacVar, xLowE, xHighE, yLowE, yHighE)
     }
 
     context(SbfCFGToTAC<TNum, TOffset, TFlags>)
-    fun getArgsFromU128ShiftCompilerRt(locInst: LocatedSbfInstruction): U128ShiftOperands? {
+    internal fun getArgsFromU128ShiftCompilerRt(locInst: LocatedSbfInstruction): U128ShiftOperands? {
         val (resLow, resHigh, _) = getResFrom128(locInst) ?: return null
-        val xLowE = exprBuilder.mkExprSym(Value.Reg(SbfRegister.R2_ARG))
-        val xHighE = exprBuilder.mkExprSym(Value.Reg(SbfRegister.R3_ARG))
-        val shiftE = exprBuilder.mkExprSym(Value.Reg(SbfRegister.R4_ARG))
+        val xLowE = sbfTacB.mkExprSym(Value.Reg(SbfRegister.R2))
+        val xHighE = sbfTacB.mkExprSym(Value.Reg(SbfRegister.R3))
+        val shiftE = sbfTacB.mkExprSym(Value.Reg(SbfRegister.R4))
         return U128ShiftOperands(resLow.tacVar, resHigh.tacVar, xLowE, xHighE, shiftE)
     }
 }
@@ -102,14 +114,20 @@ class SummarizeIntegerU128CompilerRtWithMathInt<TNum : INumValue<TNum>, TOffset 
 
     context(SbfCFGToTAC<TNum, TOffset, TFlags>)
     override fun summarizeMulti3(args: U128BinaryOperands): List<TACCmd.Simple> {
+        // TODO CERT-10061 revisit the TACSoundSignedMath and UseTACMathInt logic
+        if (SolanaConfig.TACSoundSignedMath.get()) {
+            return super.summarizeMulti3(args)
+        }
         // We are using 256-bits so multiplication of 128-bits cannot overflow
-        val (xMath, yMath, resMath) = Triple(vFac.mkFreshMathIntVar(), vFac.mkFreshMathIntVar(), vFac.mkFreshMathIntVar())
+        val xMath = vFac.mkFreshMathIntVar()
+        val yMath = vFac.mkFreshMathIntVar()
+        val resMath = vFac.mkFreshMathIntVar()
         val cmds = mutableListOf<TACCmd.Simple>()
         applyU128BinaryOperation(args, cmds) { res, _, x, y ->
-            cmds.add(promoteToMathInt(x.asSym(), xMath))
-            cmds.add(promoteToMathInt(y.asSym(), yMath))
-            cmds.add(assign(resMath, TACExpr.Vec.IntMul(listOf(xMath.asSym(), yMath.asSym()))))
-            cmds.add(narrowFromMathInt(resMath.asSym(), res))
+            cmds += promoteToMathInt(x.asSym(), xMath)
+            cmds += promoteToMathInt(y.asSym(), yMath)
+            cmds += assign(resMath, sbfTacB { xMath.asSym() intMul yMath.asSym() })
+            cmds += narrowFromMathInt(resMath.asSym(), res)
         }
         return cmds
     }
@@ -117,13 +135,15 @@ class SummarizeIntegerU128CompilerRtWithMathInt<TNum : INumValue<TNum>, TOffset 
     context(SbfCFGToTAC<TNum, TOffset, TFlags>)
     override fun summarizeUDivti3(args: U128BinaryOperands): List<TACCmd.Simple> {
         // We are using 256-bits so division of 128-bits cannot overflow
-        val (xMath, yMath, resMath) = Triple(vFac.mkFreshMathIntVar(), vFac.mkFreshMathIntVar(), vFac.mkFreshMathIntVar())
+        val xMath = vFac.mkFreshMathIntVar()
+        val yMath = vFac.mkFreshMathIntVar()
+        val resMath = vFac.mkFreshMathIntVar()
         val cmds = mutableListOf<TACCmd.Simple>()
         applyU128BinaryOperation(args, cmds) { res, _, x, y ->
-            cmds.add(promoteToMathInt(x.asSym(), xMath))
-            cmds.add(promoteToMathInt(y.asSym(), yMath))
-            cmds.add(assign(resMath, TACExpr.BinOp.IntDiv(xMath.asSym(), yMath.asSym())))
-            cmds.add(narrowFromMathInt(resMath.asSym(), res))
+            cmds += promoteToMathInt(x.asSym(), xMath)
+            cmds += promoteToMathInt(y.asSym(), yMath)
+            cmds += assign(resMath, sbfTacB { xMath.asSym() intDiv yMath.asSym() })
+            cmds += narrowFromMathInt(resMath.asSym(), res)
         }
         return cmds
     }

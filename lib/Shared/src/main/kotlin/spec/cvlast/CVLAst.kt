@@ -28,6 +28,7 @@ import bridge.EVMExternalMethodInfo
 import bridge.EVMExternalMethodInfo.Companion.viewField
 import com.certora.collect.*
 import compiler.SolidityFunctionStateMutability
+import compiler.applyKeccak
 import config.Config
 import datastructures.stdcollections.*
 import evm.SighashInt
@@ -46,10 +47,7 @@ import spec.cvlast.Visibility.INTERNAL
 import spec.cvlast.transformer.CVLCmdTransformer
 import spec.cvlast.transformer.CVLExpTransformer
 import spec.cvlast.typechecker.*
-import spec.cvlast.typedescriptors.EVMTypeDescriptor
-import spec.cvlast.typedescriptors.ToVMContext
-import spec.cvlast.typedescriptors.VMDynamicArrayTypeDescriptor
-import spec.cvlast.typedescriptors.VMTypeDescriptor
+import spec.cvlast.typedescriptors.*
 import spec.genericrulegenerators.BuiltInRuleId
 import spec.isWildcard
 import spec.rules.ICVLRule
@@ -77,6 +75,93 @@ class InvalidCVLTypeException(msg: String, contractName: String?, id: String) :
 @Suppress("unused")
 class InvalidParameterType(msg: String) : RuntimeException(msg)
 
+/**
+ * Restricted index value for link path segments. Only literals and contract aliases are allowed.
+ */
+@Serializable
+sealed class LinkIndexValue : HasKSerializable, java.io.Serializable {
+    /** A numeric literal: `a.field[42]` */
+    @Serializable
+    data class NumericLiteral(val value: BigInteger) : LinkIndexValue() {
+        override fun toString() = "$value"
+    }
+
+    /** `to_bytesK(numericLiteral)`: `a.field[to_bytes4(0x1234)]` */
+    @Serializable
+    data class BytesLiteral(val k: Int, val value: BigInteger) : LinkIndexValue() {
+        override fun toString() = "to_bytes$k($value)"
+    }
+
+    /** A contract alias used as an address key: `a.field[myContract]` */
+    @Serializable
+    data class ContractRef(val alias: ContractAlias) : LinkIndexValue() {
+        override fun toString() = alias
+    }
+}
+
+@Serializable
+sealed class CVLLinkPathSegment : HasKSerializable {
+    /** Unchecked index from the parser — holds a raw CVLExp until the typechecker validates it. */
+    @Serializable
+    data class UncheckedIndex(val expr: CVLExp) : CVLLinkPathSegment() {
+        override fun toString() = "[$expr]"
+    }
+
+    /** A validated link path segment — guaranteed to not contain [UncheckedIndex] after typechecking. */
+    @Serializable
+    sealed class Resolved : CVLLinkPathSegment()
+
+    @Serializable
+    data class Field(val name: String) : Resolved() {
+        override fun toString() = ".$name"
+    }
+    /** Validated index — only contains restricted literal/contract-ref forms. */
+    @Serializable
+    data class Index(val value: LinkIndexValue) : Resolved() {
+        override fun toString() = "[${value}]"
+    }
+    @Serializable
+    object Wildcard : Resolved() {
+        override fun toString() = "[_]"
+        private fun readResolve(): Any = Wildcard
+    }
+}
+
+typealias ContractAlias = String
+
+/**
+ * Common base for link entries before and after typechecking.
+ * [UnresolvedCVLLinkEntry] is produced by the parser; [CVLLinkEntry] by the typechecker.
+ */
+@Serializable
+sealed interface CVLLinkEntryBase : HasRange, HasKSerializable {
+    val sourceContractAlias: ContractAlias
+    val fieldPath: List<CVLLinkPathSegment>
+    val targets: Set<ContractAlias>
+    override val range: Range
+    /** e.g. `a.field[0].subfield` */
+    val pathString: String get() = sourceContractAlias + fieldPath.joinToString("")
+}
+
+/** Parser-produced link entry. Indices may be [CVLLinkPathSegment.UncheckedIndex]; [isImmutable] is unknown. */
+@Serializable
+data class UnresolvedCVLLinkEntry(
+    override val sourceContractAlias: ContractAlias,
+    override val fieldPath: List<CVLLinkPathSegment>,
+    override val targets: Set<ContractAlias>,
+    override val range: Range
+) : CVLLinkEntryBase
+
+/** Typechecked link entry. All path segments are [CVLLinkPathSegment.Resolved]. */
+@Serializable
+data class CVLLinkEntry(
+    override val sourceContractAlias: ContractAlias,
+    override val fieldPath: List<CVLLinkPathSegment.Resolved>,
+    override val targets: Set<ContractAlias>,
+    val isImmutable: Boolean = false,
+    override val range: Range
+) : CVLLinkEntryBase
+
 @Serializable
 data class CVLAst(
     val importedMethods: List<MethodBlockEntry>,
@@ -92,7 +177,8 @@ data class CVLAst(
     val importedSpecFiles: List<CVLImportedSpecFile>,
     val overrideDeclarations: OverrideDeclarations,
     /* The scope is guaranteed to be initialized after [CVLScope.addScopes] */
-    val scope: CVLScope
+    val scope: CVLScope,
+    val linkEntries: List<CVLLinkEntryBase> = emptyList(),
 ) : IAstCodeBlocks
 
 interface CreatesScope {
@@ -482,6 +568,69 @@ sealed class CVLHookPattern : AmbiSerializable {
         override val definedVariables get() = listOf(value)
         override fun fieldsMatch(other: CVLHookPattern): Boolean = true
         override fun toString(): String = "Create ($value)"
+    }
+
+    @KSerializable
+    data class Event(
+        val eventName: String,
+        val contractName: SolidityContract?,
+        val eventParams: List<EventParam>
+    ) : CVLHookPattern() {
+        @KSerializable
+        @Treapable
+        data class EventParam(
+            val param: VMParam,
+            val indexed: Boolean
+        ) : AmbiSerializable {
+            override fun toString() : String {
+                val indexedPrefix = if(indexed) {
+                    " indexed"
+                } else { "" }
+                val typeString = this.param.vmType.prettyPrint()
+                val nm = this.param.name?.let { nm -> " $nm" }.orEmpty()
+                return "$typeString$indexedPrefix$nm"
+            }
+        }
+
+        override fun fieldsMatch(other: CVLHookPattern): Boolean {
+            if(other !is Event) {
+                return false
+            }
+            if(this.eventSignature != other.eventSignature) {
+                return false
+            }
+            val oneIsWildcard = other.contractName == null || this.contractName == null
+            if(oneIsWildcard) {
+                return true
+            } else {
+                return other.contractName == this.contractName
+            }
+        }
+
+        override fun toString(): String {
+            val targetName = contractName?.name ?: "_"
+            val params = eventParams.joinToString(", ", "(", ")")
+            return "Event $targetName.$eventName$params"
+        }
+
+        override val definedVariables: List<VMParam.Named>
+            get() = eventParams.mapNotNull { p ->
+                p.param.let { it as? VMParam.Named }
+            }
+
+        val eventSignature by lazy {
+            val canonicalString = this.eventName + this.eventParams.joinToString(
+                separator = ",",
+                prefix = "(",
+                postfix = ")"
+            ) {
+                it.param.type.canonicalString(object : PrintingContext {
+                    override val isLibrary: Boolean
+                        get() = false
+                })
+            }
+            applyKeccak(canonicalString.toByteArray())
+        }
     }
 
     interface LogHookPattern

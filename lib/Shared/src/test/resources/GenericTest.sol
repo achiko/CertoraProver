@@ -13,6 +13,7 @@ contract PrimaryContract {
     enum ExampleEnum { MEMBER1, MEMBER2 }
 
     uint256 privateUintStorage;
+    address public immutable immutable_field = address(0);
 
     function internalFunction() internal {}
     function externalFunction() external {}
@@ -21,6 +22,9 @@ contract PrimaryContract {
 
     uint   public uint_field;
     uint[] public array_field;
+    uint[3] public static_array_field;
+    mapping(bool => address) public bool_map;
+    mapping(uint => mapping(uint => address)) public nested_map;
 
     bytes public bytes_field;
     string public string_field;
@@ -31,6 +35,8 @@ contract PrimaryContract {
     struct ExampleStruct {
         uint uint_field;
     }
+
+    ExampleStruct public struct_field;
 
     function returnsStruct() external returns(ExampleStruct memory) { return ExampleStruct(3); }
     function returnsTwiceUint(uint x) public pure returns(uint) { return 2 * x; }

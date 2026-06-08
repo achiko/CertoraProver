@@ -22,8 +22,9 @@ import sbf.domains.INumValue
 import sbf.domains.IOffset
 import sbf.domains.IPTANodeFlags
 import sbf.domains.PTAOffset
-import tac.Tag
-import vc.data.*
+import vc.data.TACCmd
+import vc.data.TACSymbol
+import datastructures.stdcollections.*
 
 /**
  * Emit TAC code for a memset of non-stack memory.
@@ -35,33 +36,20 @@ import vc.data.*
  * The byte map scalarizer optimization does not support map definitions.
  */
 context(SbfCFGToTAC<TNum, TOffset, TFlags>)
-fun<TNum : INumValue<TNum>, TOffset : IOffset<TOffset>, TFlags: IPTANodeFlags<TFlags>> memsetNonStackWithMapDef(
+internal fun<TNum : INumValue<TNum>, TOffset : IOffset<TOffset>, TFlags: IPTANodeFlags<TFlags>> memsetNonStackWithMapDef(
     mapV: TACByteMapVariable,
     len: Long,
     value: Long
 ): List<TACCmd.Simple> {
     val initMap = vFac.getByteMapVar("memset")
-    return datastructures.stdcollections.listOf(
-        TACCmd.Simple.AssigningCmd.AssignExpCmd(
-            lhs = initMap.tacVar,
-            rhs = TACExpr.MapDefinition(
-                defParams = datastructures.stdcollections.listOf(
-                    TACKeyword.TMP(Tag.Bit256, "!idx").toUnique("!").asSym()
-                ),
-                tag = Tag.ByteMap,
-                definition = if (value == 0L) {
-                    exprBuilder.mkConst(value).asSym()
-                } else {
-                    TACExpr.Unconstrained(Tag.Bit256)
-                }
-            )
-        ),
+    return listOf(
+        assign(initMap.tacVar, sbfTacB.defineMap(value)),
         TACCmd.Simple.ByteLongCopy(
             srcBase = initMap.tacVar,
             srcOffset = TACSymbol.Zero,
             dstBase = mapV.tacVar,
-            dstOffset = exprBuilder.mkVar(SbfRegister.R1_ARG),
-            length = exprBuilder.mkConst(len),
+            dstOffset = sbfTacB.mkVar(SbfRegister.R1),
+            length = sbfTacB.mkConst(len),
         )
     )
 }
@@ -70,20 +58,22 @@ fun<TNum : INumValue<TNum>, TOffset : IOffset<TOffset>, TFlags: IPTANodeFlags<TF
  * Same semantics than `memsetNonStackWithMapDef` but this version does not use a map definition.
  */
 context(SbfCFGToTAC<TNum, TOffset, TFlags>)
-fun<TNum : INumValue<TNum>, TOffset : IOffset<TOffset>, TFlags: IPTANodeFlags<TFlags>> memsetNonStack(
+internal fun<TNum : INumValue<TNum>, TOffset : IOffset<TOffset>, TFlags: IPTANodeFlags<TFlags>> memsetNonStack(
     mapV: TACByteMapVariable,
     len: Long,
     value: Long
 ): List<TACCmd.Simple> {
     val valueS = if (value == 0L) {
-        exprBuilder.mkConst(value)
+        sbfTacB.mkConst(value)
     } else {
         // this is an over-approximation. See comment in `memsetNonStackWithMapDef` for details.
         vFac.mkFreshIntVar()
     }
     val cmds = mutableListOf<TACCmd.Simple>()
+    val r1 = sbfTacB.mkVar(SbfRegister.R1)
     for (i in 0 until len) {
-        cmds.addAll(mapStores(mapV, exprBuilder.mkVar(SbfRegister.R1_ARG), PTAOffset(i), valueS))
+        cmds += mapStores(mapV, r1, PTAOffset(i), valueS)
     }
+    cmds += accounts.updateWrite(r1)
     return cmds
 }

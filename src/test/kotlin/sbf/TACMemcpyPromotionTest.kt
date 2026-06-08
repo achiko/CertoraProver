@@ -17,10 +17,12 @@
 
 package sbf
 
+import config.ConfigScope
 import sbf.cfg.*
 import sbf.disassembler.SbfRegister
 import sbf.disassembler.Label
 import org.junit.jupiter.api.*
+import sbf.SolanaConfig.ForgetOnUntrackedStackLoad
 import sbf.callgraph.SolanaFunction
 import sbf.disassembler.GlobalVariables
 import sbf.domains.MemorySummaries
@@ -48,7 +50,7 @@ class TACMemcpyPromotionTest {
     @Test
     fun `widening + narrowing with memcpy promotion`() {
         val cfg = `widening + narrowing`()
-        promoteStoresToMemcpy(cfg, globals, memSummaries)
+        promoteMemcpy(cfg, globals, memSummaries)
         removeUselessDefinitions(cfg)
         Assertions.assertEquals(true, cfg.hasMemcpyZExt())
         Assertions.assertEquals(true, cfg.hasMemcpyTrunc())
@@ -64,7 +66,9 @@ class TACMemcpyPromotionTest {
         Assertions.assertEquals(false, cfg.hasMemcpyZExt())
         Assertions.assertEquals(false, cfg.hasMemcpyTrunc())
         expectException<UnknownStackContentError> {
-            toTAC(cfg)
+            ConfigScope(ForgetOnUntrackedStackLoad, false).use {
+                toTAC(cfg)
+            }
         }
     }
 
@@ -80,9 +84,9 @@ class TACMemcpyPromotionTest {
     ```
      **/
     private fun `widening + narrowing`(): MutableSbfCFG {
-        val r1 = Value.Reg(SbfRegister.R1_ARG)
-        val r2 = Value.Reg(SbfRegister.R2_ARG)
-        val r10 = Value.Reg(SbfRegister.R10_STACK_POINTER)
+        val r1 = Value.Reg(SbfRegister.R1)
+        val r2 = Value.Reg(SbfRegister.R2)
+        val r10 = Value.Reg(SbfRegister.R10)
         val cfg = MutableSbfCFG("test")
         val b1 = cfg.getOrInsertBlock(Label.Address(1))
         cfg.setEntry(b1)
@@ -111,7 +115,7 @@ class TACMemcpyPromotionTest {
     @Test
     fun `widening store with memcpy promotion`() {
         val cfg = `widening store`()
-        promoteStoresToMemcpy(cfg, globals, memSummaries)
+        promoteMemcpy(cfg, globals, memSummaries)
         Assertions.assertEquals(true, cfg.hasMemcpyZExt())
         removeUselessDefinitions(cfg)
         println("After memcpy promotion: $cfg")
@@ -139,9 +143,9 @@ class TACMemcpyPromotionTest {
      * ```
      */
     private fun `widening store`(): MutableSbfCFG {
-        val r1 = Value.Reg(SbfRegister.R1_ARG)
-        val r2 = Value.Reg(SbfRegister.R2_ARG)
-        val r10 = Value.Reg(SbfRegister.R10_STACK_POINTER)
+        val r1 = Value.Reg(SbfRegister.R1)
+        val r2 = Value.Reg(SbfRegister.R2)
+        val r10 = Value.Reg(SbfRegister.R10)
         val cfg = MutableSbfCFG("test")
         val b1 = cfg.getOrInsertBlock(Label.Address(1))
         cfg.setEntry(b1)
@@ -165,7 +169,7 @@ class TACMemcpyPromotionTest {
     @Test
     fun `narrowing store with memcpy promotion`() {
         val cfg = `narrowing store`()
-        promoteStoresToMemcpy(cfg, globals, memSummaries)
+        promoteMemcpy(cfg, globals, memSummaries)
         removeUselessDefinitions(cfg)
         Assertions.assertEquals(true, cfg.hasMemcpyTrunc())
         println("After memcpy promotion: $cfg")
@@ -195,10 +199,10 @@ class TACMemcpyPromotionTest {
      * assert(r2 == 0)
      */
     private fun `narrowing store`(): MutableSbfCFG {
-        val r0 = Value.Reg(SbfRegister.R0_RETURN_VALUE)
-        val r1 = Value.Reg(SbfRegister.R1_ARG)
-        val r2 = Value.Reg(SbfRegister.R2_ARG)
-        val r10 = Value.Reg(SbfRegister.R10_STACK_POINTER)
+        val r0 = Value.Reg(SbfRegister.R0)
+        val r1 = Value.Reg(SbfRegister.R1)
+        val r2 = Value.Reg(SbfRegister.R2)
+        val r10 = Value.Reg(SbfRegister.R10)
         val cfg = MutableSbfCFG("test")
         val b1 = cfg.getOrInsertBlock(Label.Address(1))
         cfg.setEntry(b1)
@@ -232,7 +236,7 @@ class TACMemcpyPromotionTest {
     @Test
     fun `example from manifest with memcpy promotion`() {
         val cfg = `example from manifest`()
-        promoteStoresToMemcpy(cfg, globals, memSummaries)
+        promoteMemcpy(cfg, globals, memSummaries)
         removeUselessDefinitions(cfg)
         Assertions.assertEquals(true, cfg.hasMemcpyZExt())
         println("After memcpy promotion: $cfg")
@@ -261,10 +265,10 @@ class TACMemcpyPromotionTest {
      * ```
      */
     private fun `example from manifest`(): MutableSbfCFG {
-        val r0 = Value.Reg(SbfRegister.R0_RETURN_VALUE)
-        val r1 = Value.Reg(SbfRegister.R1_ARG)
-        val r2 = Value.Reg(SbfRegister.R2_ARG)
-        val r10 = Value.Reg(SbfRegister.R10_STACK_POINTER)
+        val r0 = Value.Reg(SbfRegister.R0)
+        val r1 = Value.Reg(SbfRegister.R1)
+        val r2 = Value.Reg(SbfRegister.R2)
+        val r10 = Value.Reg(SbfRegister.R10)
         val cfg = MutableSbfCFG("test")
         val b1 = cfg.getOrInsertBlock(Label.Address(1))
         cfg.setEntry(b1)

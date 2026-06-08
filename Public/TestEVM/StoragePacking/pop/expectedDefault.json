@@ -1,0 +1,16 @@
+{
+	"rules": {
+		"check1": "SUCCESS",
+		"check2": "SUCCESS",
+		"envfreeFuncsStaticCheck": {
+			"SUCCESS": [
+				"a(uint256)",
+				"add(uint16)",
+				"get(uint256)",
+				"len()",
+				"remove()",
+				"set(uint256,uint16)"
+			]
+		}
+	}
+}

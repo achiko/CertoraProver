@@ -22,29 +22,36 @@ import bridge.ContractInstanceInSDC
 import bridge.SingleDeployedContract
 import bridge.VerificationQuery
 import bridge.VerificationQueryType
-import config.*
+import config.CERTORA_BUILD_FILE_PATH
+import config.CERTORA_VERIFY_FILE_PATH
+import config.CommandLineParser
+import config.Config
 import datastructures.stdcollections.*
 import disassembler.DisassembledEVMBytecode
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.MapSerializer
 import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.encodeToString
-import kotlinx.serialization.json.*
+import kotlinx.serialization.json.Json
 import scene.*
 import spec.CVL
 import spec.CVLAstBuilder
+import spec.CVLInput.Companion.parseRawCVLSpec
+import spec.CVLSource
 import spec.DummyTypeResolver
 import spec.cvlast.*
 import spec.cvlast.typechecker.CVLError
 import spec.rules.ICVLRule
-import java.io.File
-import java.math.BigInteger
-import kotlin.system.exitProcess
 import tac.*
 import utils.*
 import utils.CollectingResult.Companion.bind
 import utils.CollectingResult.Companion.map
 import utils.CollectingResult.Companion.ok
+import java.io.File
+import java.math.BigInteger
+import kotlin.io.path.Path
+import kotlin.io.path.extension
+import kotlin.system.exitProcess
 
 /**
  * This class loads contracts, but does not care about the contracts' actual code.
@@ -213,7 +220,9 @@ object ProverInputPreprocessor {
             val internalSummaries: List<Pair<CVL.SummarySignature.Internal, SpecCallSummary.ExpressibleInCVL>>,
             val externalSummaries: List<Pair<CVL.SummarySignature.External, SpecCallSummary.ExpressibleInCVL>>,
             val unresolvedSummaries: List<Pair<CVL.SummarySignature.External, SpecCallSummary.ExpressibleInCVL>>,
-            val instances: List<Pair<String, String>> // map addresses to names
+            val instances: List<Pair<String, String>>, // map addresses to names
+            val importedContracts: List<CVLImportedContract>,
+            val linkEntries: List<CVLLinkEntry>
         )
 
         PrintedAST(
@@ -226,7 +235,9 @@ object ProverInputPreprocessor {
             ast.internalSummaries.toList(),
             ast.externalSummaries.toList(),
             ast.unresolvedSummaries.toList(),
-            contractSource.instances().map { it.address.toString(16) to it.name }
+            contractSource.instances().map { it.address.toString(16) to it.name },
+            ast.importedContracts,
+            ast.linkEntries
         ).let { dumpIt ->
             val serialized = lspJsonConfig.encodeToString(dumpIt)
 
@@ -284,8 +295,8 @@ object ProverInputPreprocessor {
                     withSpec(verify).map { ast ->
                         printFilteredRules(
                             ast.rules.mapToSet { it.declarationId } +
-                            ast.invs.mapToSet { it.id } +
-                            ast.useDeclarations.builtInRulesInUse.mapToSet { it.id }
+                                ast.invs.mapToSet { it.id } +
+                                ast.useDeclarations.builtInRulesInUse.mapToSet { it.id }
                         )
                         printFunctionCalls(ast, ast.importedContracts, verify.primary_contract)
                         astCb(ast)
@@ -293,6 +304,11 @@ object ProverInputPreprocessor {
                 } else {
                     ok
                 }
+            } else if(args.size == 1 && Path(args[0]).extension == "spec") {
+                val path = args[0]
+                parseRawCVLSpec(
+                    CVLSource.File(path, path, false)
+                )
             } else {
                 System.err.println("Bad input to CVL typechecker: ${args.map { it }}")
                 ok

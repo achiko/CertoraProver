@@ -20,12 +20,15 @@ package sbf
 import annotations.PollutesGlobalState
 import config.CommandLineParser
 import config.Config
+import config.ConfigScope
 import config.ConfigType
 import datastructures.stdcollections.*
 import sbf.analysis.WholeProgramMemoryAnalysis
+import sbf.analysis.runGlobalInferenceAnalysis
 import sbf.callgraph.CVTFunction
 import sbf.callgraph.MutableSbfCallGraph
 import sbf.cfg.SbfCFG
+import sbf.cfg.resolveGetSysvarCalls
 import sbf.tac.sbfCFGsToTAC
 import kotlinx.coroutines.runBlocking
 import report.DummyLiveStatsReporter
@@ -104,6 +107,18 @@ fun toTAC (cfg: SbfCFG,
     memAnalysis.inferAll()
     return sbfCFGsToTAC(prog, memSummaries, memAnalysis.getResults())
 }
+
+fun toTACWithGlobalInference(prog: MutableSbfCallGraph, memSummaries: MemorySummaries): CoreTACProgram =
+    ConfigScope(SolanaConfig.AggressiveGlobalDetection, true).use {
+        val newCallgraph = runGlobalInferenceAnalysis(prog, memSummaries)
+        val newGlobals = newCallgraph.getGlobals()
+        val newCfg = newCallgraph.getCallGraphRootSingleOrFail().clone(prog.getCallGraphRootSingleOrFail().getName())
+        resolveGetSysvarCalls(newCfg, newGlobals, memSummaries)
+        println("$newCfg")
+        val tacProg = toTAC(newCfg, globals = newGlobals)
+        println(dumpTAC(tacProg))
+        tacProg
+    }
 
 fun verify(program: CoreTACProgram, report: Boolean = false): Boolean {
     if (report) {

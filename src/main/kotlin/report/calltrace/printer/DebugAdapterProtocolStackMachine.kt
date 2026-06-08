@@ -18,13 +18,7 @@
 package report.calltrace.printer
 
 import analysis.LTACCmd
-import analysis.icfg.Inliner
 import analysis.icfg.Summarization
-import analysis.icfg.SummaryStack.END_EXTERNAL_SUMMARY
-import analysis.icfg.SummaryStack.END_INTERNAL_SUMMARY
-import analysis.icfg.SummaryStack.START_EXTERNAL_SUMMARY
-import analysis.icfg.SummaryStack.START_INTERNAL_SUMMARY
-import analysis.ip.INTERNAL_FUNC_EXIT
 import analysis.ip.INTERNAL_FUNC_START
 import analysis.storage.DisplayPath
 import analysis.storage.InstantiatedDisplayPath
@@ -35,7 +29,6 @@ import config.Config
 import config.DebugAdapterProtocolMode
 import datastructures.persistentStackOf
 import datastructures.stdcollections.*
-import dwarf.*
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -453,23 +446,6 @@ class DebugAdapterProtocolStackMachine(
      * Extracts the [DebugAdapterAction] from a command. Either the command itself
      * implements the interface, or the annotation implements the interface.
      */
-    private fun tryGetDebugAction(cmd: TACCmd.Simple): DebugAdapterAction? {
-        return cmd as? DebugAdapterAction
-            ?: cmd.maybeAnnotation(SNIPPET) as? DebugAdapterAction
-            ?: cmd.maybeAnnotation(INTERNAL_FUNC_EXIT) as? DebugAdapterAction
-            ?: cmd.maybeAnnotation(INTERNAL_FUNC_START) as? DebugAdapterAction
-            ?: cmd.maybeAnnotation(START_EXTERNAL_SUMMARY) as? DebugAdapterAction
-            ?: cmd.maybeAnnotation(END_EXTERNAL_SUMMARY) as? DebugAdapterAction
-            ?: cmd.maybeAnnotation(START_INTERNAL_SUMMARY) as? DebugAdapterAction
-            ?: cmd.maybeAnnotation(END_INTERNAL_SUMMARY) as? DebugAdapterAction
-            ?: cmd.maybeAnnotation(Inliner.CallStack.STACK_PUSH) as? DebugAdapterAction
-            ?: cmd.maybeAnnotation(Inliner.CallStack.STACK_POP) as? DebugAdapterAction
-    }
-
-    /**
-     * Extracts the [DebugAdapterAction] from a command. Either the command itself
-     * implements the interface, or the annotation implements the interface.
-     */
     private fun tryGetRange(cmd: TACCmd.Simple): Range.Range? {
         return (cmd.maybeAnnotation(SNIPPET)?.let {
             when (it) {
@@ -543,7 +519,7 @@ class DebugAdapterProtocolStackMachine(
     fun visit(ltacCmd: LTACCmd) {
         val cmd = ltacCmd.cmd
 
-        val debugActionCmd = tryGetDebugAction(cmd)
+        val debugActionCmd = cmd.tryGetDebugAction()
 
         val range = tryGetRange(cmd)
 
@@ -776,6 +752,10 @@ class DebugAdapterProtocolStackMachine(
                     snippet.tryToSarif(model)
                 }
 
+                is SnippetCmd.CvlrSnippetCmd.PrintPubkey -> {
+                    snippet.tryToSarif(model)
+                }
+
                 is SnippetCmd.CvlrSnippetCmd.ScopeStart -> {
                     Sarif.fromPlainStringUnchecked(snippet.scopeName)
                 }
@@ -907,3 +887,13 @@ data class Statement(val statement: String, val consoleOutput: String, val frame
 
 @Serializable
 data class Trace(val CertoraDAPVersion: String, val rule: Rule, val trace: List<Statement>)
+
+
+/**
+ * Extracts the [DebugAdapterAction] from a command. Either the command itself
+ * implements the interface, or the annotation implements the interface.
+ */
+fun TACCmd.Simple.tryGetDebugAction(): DebugAdapterAction? {
+    return this as? DebugAdapterAction
+        ?: (this as? TACCmd.Simple.AnnotationCmd)?.annot?.v as? DebugAdapterAction
+}

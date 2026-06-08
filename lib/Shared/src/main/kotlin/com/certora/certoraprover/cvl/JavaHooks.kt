@@ -18,6 +18,7 @@
 package com.certora.certoraprover.cvl
 
 import annotation.OpcodeHookType
+import spec.CVLKeywords
 import spec.TypeResolver
 import spec.cvlast.*
 import spec.cvlast.CVLExp.Constant.NumberLit
@@ -49,6 +50,30 @@ data class Hook(override val range: Range.Range, internal val pattern: HookPatte
     }
 }
 
+data class EventVMParam(
+    val param: VMParam,
+    val indexed: Boolean,
+    override val range: Range
+) : Kotlinizable<CVLHookPattern.Event.EventParam> {
+    override fun kotlinize(
+        resolver: TypeResolver,
+        scope: CVLScope
+    ): CollectingResult<CVLHookPattern.Event.EventParam, CVLError> {
+        return param.kotlinize(resolver, scope).map {
+            CVLHookPattern.Event.EventParam(
+                param = it,
+                indexed = indexed
+            )
+        }
+    }
+}
+
+data class EventHookData(
+    val eventName: String,
+    val emittingContractName: String?,
+    val params: List<EventVMParam>
+)
+
 // TODO CERT-3751: This should have a more refined hierarchy
 data class HookPattern(
     override val range: Range,
@@ -57,29 +82,34 @@ data class HookPattern(
     internal val oldValue: NamedVMParam?,
     internal val slot: SlotPattern?,
     internal val params: List<NamedVMParam>?,
+    internal val eventData: EventHookData?
 ) : Kotlinizable<CVLHookPattern> {
 
+
+
     constructor(range: Range, hookType: HookType, value: NamedVMParam, slot: SlotPattern)
-        : this(range, hookType, value, null, slot, null)
+        : this(range, hookType, value, null, slot, null, null)
 
     constructor(range: Range, hookType: HookType, value: NamedVMParam, oldValue: NamedVMParam, slot: SlotPattern)
-        : this(range, hookType, value, oldValue, slot, null)
+        : this(range, hookType, value, oldValue, slot, null, null)
+
+    constructor(range: Range, eventData: EventHookData) : this(range, HookType.EVENT, null, null, null, null, eventData)
 
     /** Constructor for non-storage hooks (e.g., hooks on create) */
     constructor(range: Range, hookType: HookType, value: NamedVMParam)
-        : this(range, hookType, value, null, null, null)
+        : this(range, hookType, value, null, null, null, null)
 
     // Constructors for opcode hooks
 
     /** hookable opcodes with a return value */
     constructor(range: Range, hookTypeName: String, params: List<NamedVMParam>, value: NamedVMParam?)
         // The valueOf call is guaranteed to succeed as the lexer uses HookType for EVMConfig to define hookable opcodes with 1 return value
-        : this(range, HookType.valueOf(hookTypeName), value, null, null, params)
+        : this(range, HookType.valueOf(hookTypeName), value, null, null, params, null)
 
     /** hookable opcodes with no return values */
     constructor(range: Range, hookTypeName: String, params: List<NamedVMParam>)
         // The valueOf call is guaranteed to succeed as the lexer uses HookType for EVMConfig to define hookableOpcodes
-        : this(range, HookType.valueOf(hookTypeName), null, null, null, params)
+        : this(range, HookType.valueOf(hookTypeName), null, null, null, params, null)
 
     override fun kotlinize(resolver: TypeResolver, scope: CVLScope): CollectingResult<CVLHookPattern, CVLError> = collectingErrors {
         val kvalue    = bind(value?.kotlinize(resolver, scope) ?: null.lift())
@@ -91,6 +121,25 @@ data class HookPattern(
             HookType.TLOAD  -> CVLHookPattern.StoragePattern.Load(kvalue!!, slot!!, base(true))
             HookType.TSTORE -> CVLHookPattern.StoragePattern.Store(kvalue!!, slot!!, base(true), oldValue)
             HookType.CREATE -> CVLHookPattern.Create(kvalue!!)
+            HookType.EVENT -> {
+                check(eventData != null) {
+                    "Unexpectedly null event data, parser is broken"
+                }
+                val params = collectAndFilter(
+                    eventData.params.map {
+                        it.kotlinize(resolver, scope)
+                    }
+                )
+                CVLHookPattern.Event(
+                    eventName = eventData.eventName,
+                    contractName = when(eventData.emittingContractName) {
+                        null -> null
+                        CVLKeywords.wildCardExp.name -> null
+                        else -> resolver.resolveNameToContract(eventData.emittingContractName)
+                    },
+                    params
+                )
+            }
             else -> {
                 check(hookType.lowLevel) { "Did not expect a non-opcode low-level hook type ${hookType.name}" }
                 check(GeneratedOpcodeParsers.supportsAutoParse(hookType)) { "Unrecognized hook pattern ${hookType.name}" }
@@ -126,6 +175,7 @@ enum class HookType(val lowLevel: Boolean, @Suppress("Unused") val numInputs: In
     CREATE(false, 0, 0),
     TLOAD(false, 0, 0),
     TSTORE(false, 0, 0),
+    EVENT(false, 0, 0),
 
     // these are low level hooks for storage load/store
     @OpcodeHookType(withOutput = true, valueType = "uint256", params = ["uint256 loc"], onlyNoStorageSplitting = true)

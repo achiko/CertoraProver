@@ -571,9 +571,7 @@ class WasmLoader(wasmFile: File) {
             OpCode.I64_NE -> ComparisonBinary(BinaryComparisonOp.I64NE, WASMAddress(ins.address()))
 
             OpCode.I32_CONST -> I32Const(I32Value(ins.operands()[0].positiveModulus(I32_BOUND)), WASMAddress(ins.address()))
-
             OpCode.I64_CONST -> I64Const(I64Value((ins.operands()[0]).positiveModulus(I64_BOUND)), WASMAddress(ins.address()))
-
             OpCode.F32_CONST -> F32Const(F32Value(ins.operands()[0].toFloat()), WASMAddress(ins.address()))
             OpCode.F64_CONST -> F64Const(F64Value(ins.operands()[0].toDouble()), WASMAddress(ins.address()))
 
@@ -590,13 +588,13 @@ class WasmLoader(wasmFile: File) {
             OpCode.F64_LE -> unimplemented
             OpCode.F64_GE -> unimplemented
             OpCode.I32_CTZ -> NumericUnary(UnaryNumericOp.I32CTZ, WASMAddress(ins.address()))
-            OpCode.I32_POPCNT -> unimplemented
-            OpCode.I32_ROTL -> unimplemented
-            OpCode.I32_ROTR -> unimplemented
+            OpCode.I32_POPCNT -> WasmInstruction.NondetStub.UnI32(ins.opcode())
+            OpCode.I32_ROTL -> WasmInstruction.NondetStub.BinI32(ins.opcode())
+            OpCode.I32_ROTR -> WasmInstruction.NondetStub.BinI32(ins.opcode())
             OpCode.I64_CTZ -> NumericUnary(UnaryNumericOp.I64CTZ, WASMAddress(ins.address()))
-            OpCode.I64_POPCNT -> unimplemented
+            OpCode.I64_POPCNT -> WasmInstruction.NondetStub.UnI64(ins.opcode())
             OpCode.I64_ROTL -> WasmInstruction.NondetStub.BinI64(ins.opcode())
-            OpCode.I64_ROTR -> unimplemented
+            OpCode.I64_ROTR -> WasmInstruction.NondetStub.BinI64(ins.opcode())
             OpCode.F32_ABS -> unimplemented
             OpCode.F32_NEG -> unimplemented
             OpCode.F32_CEIL -> unimplemented

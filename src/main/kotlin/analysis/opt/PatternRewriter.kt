@@ -18,6 +18,7 @@
 package analysis.opt
 
 import analysis.*
+import analysis.opt.PatternRewriter.PatternHandler.Context
 import analysis.patterns.Info
 import analysis.patterns.InfoKey
 import analysis.patterns.PatternHelpers
@@ -90,6 +91,12 @@ class PatternRewriter private constructor(private val prog: CoreTACProgram) {
         data object Xored : Key<LTACSymbol>()
         data object C1 : Key<BigInteger>()
         data object C2 : Key<BigInteger>()
+        data object C3 : Key<BigInteger>()
+        data object C4 : Key<BigInteger>()
+        data object C5 : Key<BigInteger>()
+        data object C6 : Key<BigInteger>()
+        data object C7 : Key<BigInteger>()
+        data object C8 : Key<BigInteger>()
         data object I1 : Key<Int>()
     }
 
@@ -177,6 +184,18 @@ class PatternRewriter private constructor(private val prog: CoreTACProgram) {
                 get() = info[this]!!
         }
     }
+
+    fun patternOnlyIf(
+        cond: Boolean,
+        name: String,
+        pattern: PatternHelpers.() -> PatternMatcher.Pattern<Info>,
+        handle: Context.() -> TACExpr?,
+        vararg baseTACExprs: Class<out TACExpr>,
+        regressionMessage: Boolean = false,
+    ) = runIf(cond) {
+        PatternHandler(name, pattern, handle, baseTACExprs = baseTACExprs,regressionMessage = regressionMessage)
+    }
+
 
 
     /**

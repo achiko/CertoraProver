@@ -192,6 +192,11 @@ object InitialCodeInstrumentation {
                     scene, cvl, code.name, code.symbolTable.globalScope
                 )
                 ).transform(code)
+            }).mapIf(rule != null, CoreToCoreTransformer(ReportTypes.STRONG_INVARIANT_INLINER) { code ->
+                // inlines strong invariants
+                StrongInvariantInliner(scene, CVLCompiler(
+                    scene, cvl, code.name, code.symbolTable.globalScope
+                ), rule!!).transform(code)
             }).mapIf(Config.BoundedModelChecking.getOrNull() == null, CoreToCoreTransformer(ReportTypes.REQUIRE_INVARIANT_TRANSFORMER) { code ->
                 // translates requireInvariant commands
                 RequireInvariantTransformer(scene).transform(code)
@@ -203,11 +208,6 @@ object InitialCodeInstrumentation {
                 CVLToSimpleCompiler.finalizeStorageMovement(
                     code
                 )
-            }).mapIf(rule != null, CoreToCoreTransformer(ReportTypes.STRONG_INVARIANT_INLINER) { code ->
-                // inlines strong invariants
-                StrongInvariantInliner(scene, CVLCompiler(
-                    scene, cvl, code.name, code.symbolTable.globalScope
-                ), rule!!).transform(code)
             }).map(CoreToCoreTransformer(ReportTypes.REVERT_PATH_GENERATOR) {
                 if (Config.CvlFunctionRevert.get()) {
                     RevertPathGenerator.transform(it)

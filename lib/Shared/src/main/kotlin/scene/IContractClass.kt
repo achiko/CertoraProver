@@ -135,6 +135,7 @@ interface IContractClass : WithMemento<IContractClass.ContractMemento>, IContrac
 
     val storage: IStorageInfo
     val transientStorage: IStorageInfo
+    val resolvedLinks: ResolvedLinks get() = ResolvedLinks.EMPTY
 
     override fun getMethods(): List<ITACMethod> = getDeclaredMethods() + listOfNotNull(getWholeContract())
 
@@ -220,12 +221,4 @@ interface IContractClass : WithMemento<IContractClass.ContractMemento>, IContrac
         Allocator.restore(m.allocState)
     }
 
-    /**
-     * If this contract class comes with source information (e.g. from certoraBuild script), it will return it
-     * together with the user specific link (`--link`) information
-     */
-    fun getContractStateLinks(): ContractWithStateLinkInfo? {
-        val contract = (this as? IContractWithSource)?.src ?: return null
-        return ContractWithStateLinkInfo(this, contract.state, contract.legacyStructLinking, contract.structLinkingInfo)
-    }
 }

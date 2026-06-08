@@ -238,9 +238,11 @@ sealed interface WasmInstruction {
             private fun bin(op: OpCode, t: WasmPrimitiveType) = NondetStub(op, listOf(t, t), listOf(t))
             private fun bin(op: OpCode, t: WasmPrimitiveType, o: WasmPrimitiveType) = NondetStub(op, listOf(t, t), listOf(o))
 
-            fun UnF64(op: OpCode) = NondetStub(op, WasmPrimitiveType.F64, WasmPrimitiveType.F64)
+            fun UnI32(op: OpCode) = NondetStub(op, WasmPrimitiveType.I32, WasmPrimitiveType.I32)
             fun UnI64(op: OpCode) = NondetStub(op, WasmPrimitiveType.I64, WasmPrimitiveType.I64)
+            fun UnF64(op: OpCode) = NondetStub(op, WasmPrimitiveType.F64, WasmPrimitiveType.F64)
 
+            fun BinI32(op: OpCode) = bin(op, WasmPrimitiveType.I32)
             fun BinI64(op: OpCode) = bin(op, WasmPrimitiveType.I64)
             fun BinF64(op: OpCode) = bin(op, WasmPrimitiveType.I64)
             fun RelF64(op: OpCode) = bin(op, WasmPrimitiveType.F64, WasmPrimitiveType.I32)

@@ -34,7 +34,6 @@ import analysis.opt.intervals.Intervals.Companion.STrue
 import evm.EVM_MOD_GROUP256
 import evm.MAX_EVM_UINT256
 import evm.MIN_EVM_INT256_2S_COMPLEMENT
-import evm.twoToThe
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Test
 import tac.Tag
@@ -423,6 +422,17 @@ class BiPropagationTest {
         )
         assertEquals(
             listOf(S(0), S(10), S(0)),
+            result
+        )
+    }
+
+    @Test
+    fun bwAnd2() {
+        val result = BiPropagation.bwAnd(
+            S(1), S(Interval(1), Interval(MAX_UINT)), S(0xff)
+        )
+        assertEquals(
+            listOf(S(1), S(1), S(0xff)),
             result
         )
     }

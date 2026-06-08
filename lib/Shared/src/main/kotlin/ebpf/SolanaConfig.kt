@@ -136,6 +136,17 @@ object SolanaConfig {
         )
     ) {}
 
+    val ForgetOnUntrackedStackLoad = object : ConfigType.BooleanCmdLine(
+        true,
+        Option(
+            "solanaForgetOnUntrackedStackLoad",
+            true,
+            "If the pointer analysis loads from a stack offset that is currently marked as " +
+                "inaccessible (untracked) forget the loaded register and continue, instead " +
+                "of throwing an error. [default: true]"
+        )
+    ) {}
+
     val SlicerBackPropagateThroughAsserts = object : ConfigType.BooleanCmdLine(
         false,
         Option(
@@ -281,6 +292,25 @@ object SolanaConfig {
         )
     ) {}
 
+    val AssertOnPanic = object : ConfigType.BooleanCmdLine(
+        false,
+        Option(
+            "solanaAssertOnPanic",
+            true,
+            "Replace calls that always fail with calls to \"assert(false)\" [default: false]"
+        )
+    ) {}
+
+    val PromoteMathIntrinsics = object : ConfigType.BooleanCmdLine(
+        false,
+        Option(
+            "solanaPromoteMathIntrinsics",
+            true,
+            "Promote sequences of low-level instructions that implement math intrinsics " +
+                "(e.g., u128 wrapping add/sub) to dedicated intrinsic calls. [default: false]"
+        )
+    ) {}
+
     // TAC options
     val AddMemLayoutAssumptions = object : ConfigType.BooleanCmdLine(
         false,
@@ -346,6 +376,51 @@ object SolanaConfig {
         )
     ) {}
 
+    val TACSoundSignedMath = object : ConfigType.BooleanCmdLine(
+        false,
+        Option(
+            "solanaTACSoundSignedMath",
+            true,
+            "Enable experimental sound signed math in TAC. [default: false]"
+        )
+    ) {}
+
+    val TACOptimisticOverflowOptimization = object : ConfigType.BooleanCmdLine(
+        false,
+        Option(
+            "solanaTACOptimisticOverflowOptimization",
+            true,
+            "Enable optimistic overflow optimization in TAC. [default: false]"
+        )
+    ) {}
+
+    val TACModSimplificationSteps = object : ConfigType.IntCmdLine(
+        default = 10,
+        option = Option(
+            "modSimplificationSteps",
+            true,
+            "The maximal number of times to run the mod math simplication rewriter [default : 10]"
+        )
+    ) {}
+
+    val TACRentDeterministicReturn = object : ConfigType.BooleanCmdLine(
+        true,
+        Option(
+            "solanaTACRentDeterministicReturn",
+            true,
+            "Assume that repeated calls to sol_get_rent_sysvar return the same value in r0. [default: true]"
+        )
+    ) {}
+
+    val TACClockDeterministicReturn = object : ConfigType.BooleanCmdLine(
+        true,
+        Option(
+            "solanaTACClockDeterministicReturn",
+            true,
+            "Assume that repeated calls to sol_get_clock_sysvar return the same value in r0. [default: true]"
+        )
+    ) {}
+
     val TACPromoteOverflow = object : ConfigType.BooleanCmdLine(
         true,
         Option(
@@ -356,11 +431,39 @@ object SolanaConfig {
         )
     ) {}
 
+    val UseTACSignedMath = object : ConfigType.BooleanCmdLine(
+        false,
+        Option(
+            "solanaTACSignedArithmetic",
+            true,
+            "Experimental flag for supporting signed math in TAC. [default: false]"
+        )
+    ) {}
+
+    val UseTACFPDualEncoding = object : ConfigType.BooleanCmdLine(
+        false,
+        Option(
+            "solanaTACFPDualEncoding",
+            true,
+            "Use special TAC encoding for f64 operations by having a ghost integer value for f64 numbers that can be represented precisely by u64 [default: false]"
+        )
+    ) {}
+
+    val HeapSize = object : ConfigType.IntCmdLine(
+        32768,
+        Option(
+            "solanaHeapSize", true,
+            "Total size in bytes of the SBF heap region. " +
+            "The TAC symbolic allocator uses this to bound heap pointer ranges during verification. " +
+            "The default 32_768 bytes (32 KB) matches the actual SBF runtime constraint. [default: 32_768]"
+        )
+    ) {}
+
     val TACHeapAllocSize = object : ConfigType.IntCmdLine(
         512,
         Option(
             "solanaTACHeapAllocSize", true,
-            "Default size of an unknown heap allocation. This size is used by the TAC symbolic allocator. [default: 512]"
+            "Default size in bytes of an unknown heap allocation. This size is used by the TAC symbolic allocator. [default: 512]"
         )
     ) {}
 
@@ -395,6 +498,16 @@ object SolanaConfig {
         )
     ) {}
 
+    val TACAccountWrites = object : ConfigType.BooleanCmdLine(
+        false,
+        Option(
+            "solanaTACAccountWrites",
+            true,
+            "Enable TAC instrumentation that tracks which Solana accounts have been written. " +
+                "Required for CVT_is_account_written to return meaningful results. [default: true]"
+        )
+    ) {}
+
     val TACMaxGlobalInit = object : ConfigType.IntCmdLine(
         64,
         Option(
@@ -405,35 +518,7 @@ object SolanaConfig {
         )
     ) {}
 
-    val TACSignedMath = object : ConfigType.BooleanCmdLine(
-        false,
-        Option(
-            "solanaTACSignedArithmetic",
-            true,
-            "Experimental flag for supporting signed math in TAC. [default: false]"
-        )
-    ) {}
-
     // Printing options
-
-    val PrintResultsToStdOut = object : ConfigType.BooleanCmdLine(
-        false,
-        Option(
-            "solanaPrintResults",
-            false,
-            "Print the SBF CFG analyzed by PTA and the PTA graph to standard output (very verbose). [default: false]"
-        )
-    ) {}
-
-    val PrintResultsToDot = object : ConfigType.BooleanCmdLine(
-        false,
-        Option(
-            "solanaPrintResultsToDot",
-            false,
-            "Generate a .dot file with the SBF CFG analyzed by PTA, and " +
-                       "the PTA graph at the entry of each basic block (very verbose, only for small programs). [default: false]"
-        )
-    ) {}
 
     val PrintOriginalToStdOut = object : ConfigType.BooleanCmdLine(
         false,
@@ -444,6 +529,7 @@ object SolanaConfig {
         )
     ) {}
 
+    // We keep this option for cases where displaying a .dot file can be very expensive.
     val PrintAnalyzedToStdOut = object : ConfigType.BooleanCmdLine(
         false,
         Option(
@@ -458,7 +544,27 @@ object SolanaConfig {
         Option(
             "solanaPrintAnalyzedToDot",
             false,
-            "Generate a .dot file with the final SBF CFG after inlining and slicing. [default: false]"
+            "Generate a dot file with the final SBF CFG after inlining and slicing and " +
+                "stores in the \"outputs\" directory. [default: false]"
+        )
+    ) {}
+
+    val DumpPTAGraphsToDot: ConfigType.StringSetCmdLine = object : ConfigType.StringSetCmdLine(
+        null,
+        Option("solanaDumpPTAGraphsToDot",
+            true,
+            "Set of SBF basic block names. For each specified block, its PTA graph will be dumped into a separate .dot file. " +
+                "The block names must match those shown by ${PrintAnalyzedToDot.name}."
+        ),
+    ) {}
+
+    val PrintSbfToJson = object : ConfigType.BooleanCmdLine(
+        true,
+        Option(
+            "solanaPrintSbfToJson",
+            true,
+            "Generate a json file with the final SBF CFG after inlining and slicing and " +
+                "stores it in the \"outputs\" directory. [default: true]"
         )
     ) {}
 
@@ -487,15 +593,6 @@ object SolanaConfig {
         ),
     ) {}
 
-    val DumpPTAGraphsToDot: ConfigType.StringSetCmdLine = object : ConfigType.StringSetCmdLine(
-        null,
-        Option("solanaDumpPTAGraphsToDot",
-            true,
-            "Set of SBF basic block names. For each specified block, its PTA graph will be dumped into a separate .dot file. " +
-                       "The block names must match those shown by ${PrintAnalyzedToDot.name}."
-        ),
-    ) {}
-
     val AssertFilter: ConfigType.AssertFilterCmdLine = object : ConfigType.AssertFilterCmdLine(
         null,
         Option(
@@ -508,7 +605,6 @@ object SolanaConfig {
                 "[default: null (verify all)]"
         )
     ) {}
-
 
     val DumpDwarfDebugInfoInReports: ConfigType.BooleanCmdLine = object : ConfigType.BooleanCmdLine(
         false,

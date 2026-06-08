@@ -98,7 +98,7 @@ class StorageAnalysisSuccess(patcher: SimplePatchingProgram, contId: BigInteger,
                     storageType,
                     contId,
                     range,
-                    StorageSnippet.LoadSnippet.LinkableStorageReadId(loadCmd, disPath),
+                    StorageSnippet.LoadSnippet.LinkableStorageReadId(loadCmd),
                 )
             } else {
                 StorageSnippet.StoreSnippet(

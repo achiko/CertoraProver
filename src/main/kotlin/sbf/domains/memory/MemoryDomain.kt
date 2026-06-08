@@ -24,6 +24,7 @@ import sbf.support.SolanaInternalError
 import log.*
 import org.jetbrains.annotations.TestOnly
 import sbf.callgraph.SolanaFunction
+import utils.*
 
 /**
  * Memory abstract domain to statically partition memory of SBF programs into disjoint memory subregions.
@@ -68,8 +69,6 @@ private fun dbg(msg: () -> Any) { logger.info(msg)}
 
 class MemoryDomainError(msg: String): SolanaInternalError("MemoryDomain error: $msg")
 
-private typealias TScalarDomain<TNum, TOffset> = ScalarStackStridePredicateDomain<TNum, TOffset>
-
 /**
  * Configuration options for [MemoryDomain] that should not be set globally via CLI.
  * Since the memory domain may be executed multiple times (e.g., during CPI lowering
@@ -108,7 +107,7 @@ private val STATIC_FRAME_INITIAL_OFFSET = SBF_STACK_FRAME_SIZE
 
 
 class MemoryDomain<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>, Flags: IPTANodeFlags<Flags>> private constructor(
-    private val scalars: TScalarDomain<TNum, TOffset>,
+    private val scalars: MemoryScalarDom<TNum, TOffset>,
     private val ptaGraph: PTAGraph<TNum, TOffset, Flags>,
     private val memcmpPreds: MemEqualityPredicateDomain<Flags>,
     private val opts: MemoryDomainOpts,
@@ -120,7 +119,7 @@ class MemoryDomain<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>, Flags: IPTA
                 opts: MemoryDomainOpts,
                 globalState: GlobalState,
                 initPreconditions: Boolean = false
-    ) : this(TScalarDomain(sbfTypeFac, globalState, initPreconditions),
+    ) : this(MemoryScalarDom(sbfTypeFac, globalState, initPreconditions),
              PTAGraph(nodeAllocator, sbfTypeFac, globalState, initPreconditions),
              MemEqualityPredicateDomain(globalState = globalState),
              opts,
@@ -141,7 +140,7 @@ class MemoryDomain<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>, Flags: IPTA
 
         val scalars = getScalars()
         val ptaGraph = getPTAGraph()
-        for (v in SbfRegister.values()) {
+        for (v in SbfRegister.entries) {
             val reg = Value.Reg(v)
             val type = scalars.getAsScalarValue(reg).type()
             val isStackScalar = type is SbfType.PointerType.Stack<TNum, TOffset>
@@ -181,7 +180,7 @@ class MemoryDomain<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>, Flags: IPTA
 
     override fun deepCopy(): MemoryDomain<TNum, TOffset, Flags> {
         return if (isBottom()) {
-            val res = MemoryDomain(ptaGraph.nodeAllocator, scalars.sbfTypeFac, opts, globalState)
+            val res = MemoryDomain(ptaGraph.nodeAllocator, scalars.getTypeFac(), opts, globalState)
             res.apply { setToBottom() }
         } else {
             MemoryDomain(scalars.deepCopy(), ptaGraph.copy(), memcmpPreds.deepCopy(), opts, globalState)
@@ -190,7 +189,7 @@ class MemoryDomain<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>, Flags: IPTA
 
     private fun deepCopyOnlyScalars(): MemoryDomain<TNum, TOffset, Flags> {
         return if (isBottom()) {
-            val res = MemoryDomain(ptaGraph.nodeAllocator, scalars.sbfTypeFac, opts, globalState)
+            val res = MemoryDomain(ptaGraph.nodeAllocator, scalars.getTypeFac(), opts, globalState)
             res.apply { setToBottom() }
         } else {
             MemoryDomain(scalars.deepCopy(), ptaGraph, memcmpPreds.deepCopy(), opts, globalState)
@@ -364,7 +363,7 @@ class MemoryDomain<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>, Flags: IPTA
         val readRegs = locInst.inst.readRegisters
         readRegs.forEach { reg ->
             val offsets = (scalars.getAsScalarValue(reg).type() as? SbfType.PointerType.Stack<TNum, TOffset>)?.offset?.toLongList()
-            if (offsets != null && offsets.isNotEmpty()) {
+            if (!offsets.isNullOrEmpty()) {
                 // Scalar domain knows that `reg` points to some offset(s) in the stack
                 // but the Pointer domain does not know about `reg` or the stack offset(s)
                 val c = ptaGraph.getRegCell(reg)
@@ -378,16 +377,23 @@ class MemoryDomain<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>, Flags: IPTA
     }
 
     /**
-     * Set the value of [reg] to [newVal] only if its old value is top
-     * Return true if the scalar value has been updated.
+     * Set the value of [reg] to an arbitrary number in the scalar domain.
+     * Return true if the scalar value of [reg] has been updated.
      **/
-    private fun refineScalarValue(reg: Value.Reg, newVal: ScalarValue<TNum, TOffset>): Boolean {
+    private fun refineToNum(reg: Value.Reg): Boolean {
         val oldVal = scalars.getAsScalarValue(reg)
-        if (oldVal.isTop() && !newVal.isTop()) {
-            scalars.setScalarValue(reg, newVal)
-            return true
+        if (oldVal.type() is SbfType.PointerType.Global<TNum, TOffset>) {
+            // we don't touch a global variable
+            return false
         }
-        return false
+        val newType = scalars.getTypeFac().anyNum()
+        return if (!oldVal.type().lessOrEqual(newType)) {
+            // newType is strictly more precise
+            scalars.setScalarValue(reg, ScalarValue(newType))
+            true
+        } else {
+            false
+        }
     }
 
     /**
@@ -406,9 +412,9 @@ class MemoryDomain<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>, Flags: IPTA
             if (x != null && x.isConcrete()) {
                 val c = x.concretize()
                 if (c.getNode().mustBeInteger()) {
-                    val change = refineScalarValue(reg, ScalarValue(scalars.sbfTypeFac.anyNum()))
+                    val change = refineToNum(reg)
                     if (change) {
-                        val topNum =  scalars.sbfTypeFac.anyNum().concretize()
+                        val topNum =  scalars.getTypeFac().anyNum().concretize()
                         check(topNum != null) {"concretize on anyNum cannot be null"}
                         /// HACK: changing metadata serves here as caching the reduction.
                         val newMetadata = locInst.inst.metaData.plus(SbfMeta.REG_TYPE to  (reg to topNum))
@@ -423,7 +429,7 @@ class MemoryDomain<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>, Flags: IPTA
             /// even if the pointer analysis lost precision and cannot infer that fact anymore.
             locInst.inst.metaData.getVal(SbfMeta.REG_TYPE)?.let { (refinedReg, type) ->
                 if (refinedReg == reg && type is SbfRegisterType.NumType) {
-                    refineScalarValue(reg, ScalarValue(scalars.sbfTypeFac.anyNum()))
+                    refineToNum(reg)
                 }
             }
         }
@@ -614,7 +620,7 @@ class MemoryDomain<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>, Flags: IPTA
         dbg { "=== Memory Domain analyzing ${b.getLabel()} ===\n$this\n" }
         if (listener is DefaultInstructionListener) {
             if (isBottom()) {
-                return makeBottom(ptaGraph.nodeAllocator, scalars.sbfTypeFac, opts, globalState)
+                return makeBottom(ptaGraph.nodeAllocator, scalars.getTypeFac(), opts, globalState)
             }
             val out = if (isNonOpForPTA(b)) {
                 this.deepCopyOnlyScalars()
@@ -646,13 +652,36 @@ class MemoryDomain<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>, Flags: IPTA
         }
     }
 
-    override fun getAsScalarValue(value: Value) = getScalars().getAsScalarValue(value)
-    override fun getStackContent(offset: Long, width: Byte) = getScalars().getStackContent(offset, width)
+    override fun getAsScalarValue(value: Value) =
+        getScalars().getAsScalarValue(value)
+
+    override fun getStackContent(offset: Long, width: Byte) =
+        getScalars().getStackContent(offset, width)
+
+    override fun mayStackBeInitialized(offset: Long, size: ULong)=
+        getScalars().mayStackBeInitialized(offset, size)
+
+    override fun getTypeFac() = scalars.getTypeFac()
 
     /** External API for TAC encoding **/
     fun getRegCell(reg: Value.Reg): PTASymCell<Flags>? {
         val scalarVal = getScalars().getAsScalarValue(reg)
         return getPTAGraph().getRegCell(reg, scalarVal.type(), locInst = null)
+    }
+
+    /** Returns true iff we are sure that [reg] holds a pointer value */
+    fun isSurelyPointer(inst: SbfInstruction, reg: Value.Reg): Boolean {
+        // Note that we're currently only using the scalar domain to check if a register is a pointer or not, as we
+        // have not yet found a way to get reliable "must be pointer" info from the pointer domain.
+        // `IsPointerAnalysis` could just use the scalar domain/analysis directly, which might improve performance a
+        // bit, but for now we are doing this check in the memory domain in case we think of a way to leverage the
+        // pointer analysis.
+        unused(inst)
+        return when (getScalars().getAsScalarValue(reg).type()) {
+            is SbfType.PointerType -> true
+            is SbfType.NumType -> false
+            else -> false
+        }
     }
 
     /**

@@ -25,10 +25,8 @@ import sbf.disassembler.Label
 import sbf.support.UnknownStackContentError
 import sbf.tac.TACTranslationError
 import org.junit.jupiter.api.*
+import sbf.SolanaConfig.ForgetOnUntrackedStackLoad
 import sbf.tac.levelZeroOptimizations
-import sbf.tac.optimize
-import sbf.tac.runDSAandUnrollLoops
-import sbf.tac.solanaOptimize
 import sbf.testing.SbfTestDSL
 
 class TACStoresTest {
@@ -47,9 +45,9 @@ class TACStoresTest {
 	       assert(r2 == 0)
          */
 
-        val r1 = Value.Reg(SbfRegister.R1_ARG)
-        val r2 = Value.Reg(SbfRegister.R2_ARG)
-        val r10 = Value.Reg(SbfRegister.R10_STACK_POINTER)
+        val r1 = Value.Reg(SbfRegister.R1)
+        val r2 = Value.Reg(SbfRegister.R2)
+        val r10 = Value.Reg(SbfRegister.R10)
         val cfg = MutableSbfCFG("test1")
         val b1 = cfg.getOrInsertBlock(Label.Address(1))
         cfg.setEntry(b1)
@@ -66,7 +64,9 @@ class TACStoresTest {
         cfg.verify(true)
 
         expectException<UnknownStackContentError> {
-            toTAC(cfg)
+            ConfigScope(ForgetOnUntrackedStackLoad, false).use {
+                toTAC(cfg)
+            }
         }
     }
 
@@ -87,11 +87,11 @@ class TACStoresTest {
 	       assert(r3 == 0)
          */
 
-        val r0 = Value.Reg(SbfRegister.R0_RETURN_VALUE)
-        val r1 = Value.Reg(SbfRegister.R1_ARG)
-        val r2 = Value.Reg(SbfRegister.R2_ARG)
-        val r3 = Value.Reg(SbfRegister.R3_ARG)
-        val r10 = Value.Reg(SbfRegister.R10_STACK_POINTER)
+        val r0 = Value.Reg(SbfRegister.R0)
+        val r1 = Value.Reg(SbfRegister.R1)
+        val r2 = Value.Reg(SbfRegister.R2)
+        val r3 = Value.Reg(SbfRegister.R3)
+        val r10 = Value.Reg(SbfRegister.R10)
         val cfg = MutableSbfCFG("test2")
         val b1 = cfg.getOrInsertBlock(Label.Address(1))
         cfg.setEntry(b1)
@@ -138,11 +138,11 @@ class TACStoresTest {
 	       assert(r3 == 0)
          */
 
-        val r0 = Value.Reg(SbfRegister.R0_RETURN_VALUE)
-        val r1 = Value.Reg(SbfRegister.R1_ARG)
-        val r2 = Value.Reg(SbfRegister.R2_ARG)
-        val r3 = Value.Reg(SbfRegister.R3_ARG)
-        val r10 = Value.Reg(SbfRegister.R10_STACK_POINTER)
+        val r0 = Value.Reg(SbfRegister.R0)
+        val r1 = Value.Reg(SbfRegister.R1)
+        val r2 = Value.Reg(SbfRegister.R2)
+        val r3 = Value.Reg(SbfRegister.R3)
+        val r10 = Value.Reg(SbfRegister.R10)
         val cfg = MutableSbfCFG("test3")
         val b1 = cfg.getOrInsertBlock(Label.Address(1))
         cfg.setEntry(b1)
@@ -191,13 +191,13 @@ class TACStoresTest {
 	       assert(r3 == 0)
          */
 
-        val r0 = Value.Reg(SbfRegister.R0_RETURN_VALUE)
-        val r1 = Value.Reg(SbfRegister.R1_ARG)
-        val r2 = Value.Reg(SbfRegister.R2_ARG)
-        val r3 = Value.Reg(SbfRegister.R3_ARG)
-        val r4 = Value.Reg(SbfRegister.R4_ARG)
-        val r5 = Value.Reg(SbfRegister.R5_ARG)
-        val r10 = Value.Reg(SbfRegister.R10_STACK_POINTER)
+        val r0 = Value.Reg(SbfRegister.R0)
+        val r1 = Value.Reg(SbfRegister.R1)
+        val r2 = Value.Reg(SbfRegister.R2)
+        val r3 = Value.Reg(SbfRegister.R3)
+        val r4 = Value.Reg(SbfRegister.R4)
+        val r5 = Value.Reg(SbfRegister.R5)
+        val r10 = Value.Reg(SbfRegister.R10)
         val cfg = MutableSbfCFG("test4")
         val b1 = cfg.getOrInsertBlock(Label.Address(1))
         cfg.setEntry(b1)

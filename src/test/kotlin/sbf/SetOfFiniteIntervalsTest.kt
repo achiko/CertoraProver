@@ -283,6 +283,63 @@ class SetOfFiniteIntervalsTest {
     }
 
     @Test
+    fun join() {
+        // Disjoint, non-adjacent sets — result is the union of both
+        run {
+            val a = SetOfFiniteIntervals(listOf(FiniteInterval(1, 5), FiniteInterval(20, 25)))
+            val b = SetOfFiniteIntervals(listOf(FiniteInterval(10, 15), FiniteInterval(30, 40)))
+            Assertions.assertEquals(
+                setOf(FiniteInterval(1, 5), FiniteInterval(10, 15), FiniteInterval(20, 25), FiniteInterval(30, 40)),
+                a.join(b)
+            )
+        }
+
+        // Overlapping intervals from both sets are merged
+        run {
+            val a = SetOfFiniteIntervals(listOf(FiniteInterval(1, 10), FiniteInterval(20, 30)))
+            val b = SetOfFiniteIntervals(listOf(FiniteInterval(5, 15), FiniteInterval(25, 35)))
+            Assertions.assertEquals(
+                setOf(FiniteInterval(1, 15), FiniteInterval(20, 35)),
+                a.join(b)
+            )
+        }
+
+        // Adjacent intervals (u+1 == l) from both sets are merged into one
+        run {
+            val a = SetOfFiniteIntervals(listOf(FiniteInterval(1, 5)))
+            val b = SetOfFiniteIntervals(listOf(FiniteInterval(6, 10)))
+            Assertions.assertEquals(
+                setOf(FiniteInterval(1, 10)),
+                a.join(b)
+            )
+        }
+
+        // One set is empty — result equals the other
+        run {
+            val a = SetOfFiniteIntervals(listOf(FiniteInterval(1, 5), FiniteInterval(10, 15)))
+            val b = SetOfFiniteIntervals.new()
+            Assertions.assertEquals(a, a.join(b))
+            Assertions.assertEquals(a, b.join(a))
+        }
+
+        // Identical sets — result equals either input
+        run {
+            val a = SetOfFiniteIntervals(listOf(FiniteInterval(1, 5), FiniteInterval(10, 15)))
+            Assertions.assertEquals(a, a.join(a))
+        }
+
+        // Interleaved intervals that all merge into a single interval
+        run {
+            val a = SetOfFiniteIntervals(listOf(FiniteInterval(1, 5), FiniteInterval(11, 15)))
+            val b = SetOfFiniteIntervals(listOf(FiniteInterval(4, 12)))
+            Assertions.assertEquals(
+                setOf(FiniteInterval(1, 15)),
+                a.join(b)
+            )
+        }
+    }
+
+    @Test
     fun filterIntersecting() {
 
         run {

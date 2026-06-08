@@ -63,6 +63,9 @@ def run_rust_build(context: CertoraContext, build_cmd: List[str]) -> None:
         build_script_logger.info(f"Building by calling `{' '.join(build_cmd)}`")
         result = subprocess.run(build_cmd, capture_output=True, text=True)
 
+        if getattr(context, 'cargo_build_verbose', False) and result.stderr:
+            build_script_logger.info(f"Build stderr:\n{result.stderr}")
+
         # Check if the script executed successfully
         if result.returncode != 0:
             raise Util.CertoraUserInputError(f"Error running the script {context.build_script}\n{result.stderr}")

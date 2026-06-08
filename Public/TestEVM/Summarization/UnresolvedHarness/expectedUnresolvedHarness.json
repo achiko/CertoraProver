@@ -1,0 +1,33 @@
+{
+	"rules": {
+		"harnessReceivesCallee": "SUCCESS",
+		"harnessReceivesSender": "SUCCESS",
+		"harnessReceivesExecutingContract": "SUCCESS",
+		"returnValueIs42": "SUCCESS",
+		"twoUnresolvedCalls": "SUCCESS",
+		"harnessReceivesInSize": "SUCCESS",
+		"harnessReceivesOutSize": "SUCCESS",
+		"harnessReceivesValue": "SUCCESS",
+		"harnessReceivesGas": "SUCCESS",
+		"detailedCallGas": "SUCCESS",
+		"detailedCallOutSize": "SUCCESS",
+		"detailedCallInSize": "SUCCESS",
+		"zeroReturnSize": "SUCCESS",
+		"twoElementReturn": "SUCCESS",
+		"resolvedCallNotRedirected": "SUCCESS",
+		"envfreeFuncsStaticCheck": {
+			"SUCCESS": [
+				"CertoraUnresolvedHarness.callGas()",
+				"CertoraUnresolvedHarness.callValue()",
+				"CertoraUnresolvedHarness.callersSender()",
+				"CertoraUnresolvedHarness.executingAddr()",
+				"CertoraUnresolvedHarness.inSize()",
+				"CertoraUnresolvedHarness.originalCallee()",
+				"CertoraUnresolvedHarness.outSize()",
+				"lastResult()",
+				"resolved()",
+				"target()"
+			]
+		}
+	}
+}

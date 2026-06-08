@@ -17,6 +17,7 @@
 
 package sbf.dwarf
 
+import compiler.toHeuristicSourceSegment
 import report.calltrace.printer.StackEntry
 import sbf.cfg.SbfInstruction
 import utils.*
@@ -34,6 +35,11 @@ import sbf.cfg.Value
 import sbf.disassembler.SbfRegister
 import sbf.domains.*
 import sbf.tac.TACDebugView
+import vc.data.TACMeta.SBF_SOURCE_SEGMENT
+import vc.data.TACMetaInfo
+import vc.data.TACSymbol
+import vc.data.plusMeta
+import java.math.BigInteger
 
 /**
  * A list of labels that will be added to a CFG edge that will be translated to TAC Annotation Commands
@@ -58,17 +64,27 @@ sealed interface DWARFCfgEdgeLabel {
 
     fun usedRegisters(): Set<Value.Reg>
 
+    val persist: Boolean
+        get() = true
+
 
     /**
      * A label that marks the end of a scope - i.e. matches either [SubProgramStart] or [CallSiteWithSources]
      */
     sealed interface ScopeEnd : DWARFCfgEdgeLabel {
-        data class FunctionEnds(val depth: ULong, val allMatchingPushesInSources: Boolean, val persist: Boolean = true) : ScopeEnd {
+        data class FunctionEnds(
+            val depth: ULong,
+            val allMatchingPushesInSources: Boolean,
+            override val persist: Boolean = true
+        ) : ScopeEnd {
             override fun toString(): String {
-                return ")_fn_$depth (${persist})"
+                return ")_fn_$depth"
             }
 
-            override fun toAnnotations(locInst: LocatedSbfInstruction, dwarfView: TACDebugView): List<TACCmd.Simple.AnnotationCmd> {
+            override fun toAnnotations(
+                locInst: LocatedSbfInstruction,
+                dwarfView: TACDebugView
+            ): List<TACCmd.Simple.AnnotationCmd> {
                 return if (allMatchingPushesInSources) {
                     listOf(SnippetCmd.SolanaSnippetCmd.ExplicitDebugPopAction(persist).toAnnotation())
                 } else {
@@ -95,19 +111,29 @@ sealed interface DWARFCfgEdgeLabel {
          * [declRange] is the range in source code where the function is implemented (it doesn't highlight the entire
          * body of a function but just the first line, i.e., the method signature).
          */
-        data class InlinedCallee(val functionName: String,
-                                 val callSiteRange: Range.Range,
-                                 val declRange: Range.Range,
-                                 val persist: Boolean = true,
-                                 override val node: DwarfMethod) : ScopeStart(node) {
-            override fun toAnnotations(locInst: LocatedSbfInstruction, dwarfView: TACDebugView): List<TACCmd.Simple.AnnotationCmd> = listOfNotNull(
+        data class InlinedCallee(
+            val functionName: String,
+            val callSiteRange: Range.Range,
+            val declRange: Range.Range,
+            override val persist: Boolean = true,
+            override val node: DwarfMethod
+        ) : ScopeStart(node) {
+            override fun toAnnotations(
+                locInst: LocatedSbfInstruction,
+                dwarfView: TACDebugView
+            ): List<TACCmd.Simple.AnnotationCmd> = listOfNotNull(
                 if (persist && callSiteRange.isInSources()) {
-                    SnippetCmd.ExplicitDebugStep(callSiteRange).toAnnotation()
+                    createExplicitDebugStepAnnotation(callSiteRange)
                 } else {
                     null
                 },
                 if (declRange.isInSources()) {
-                    SnippetCmd.SolanaSnippetCmd.ExplicitDebugPushAction(StackEntry.SolanaFunction(functionName, declRange), persist).toAnnotation()
+                    SnippetCmd.SolanaSnippetCmd.ExplicitDebugPushAction(
+                        StackEntry.SolanaFunction(
+                            functionName,
+                            declRange
+                        ), persist
+                    ).toAnnotation()
                 } else {
                     null
                 }
@@ -115,7 +141,7 @@ sealed interface DWARFCfgEdgeLabel {
 
             override fun asPersistent(persistent: Boolean) = this.copy(persist = persistent)
             override fun toString(): String {
-                return "(_fn_${node.getDepth()}_${node.getMethodName()} (Inlined callee: call site at $callSiteRange, function body in source: $declRange) (${persist})"
+                return "(_fn_${node.getDepth()}_${node.getMethodName()} (Inlined callee: call site at $callSiteRange, function body in source: $declRange)"
             }
 
             override fun usedRegisters(): Set<Value.Reg> = setOf()
@@ -126,17 +152,26 @@ sealed interface DWARFCfgEdgeLabel {
          * is the range in source code where the function is implemented (it doesn't highlight the entire
          * body of a function but just the first line, i.e., the method signature).
          */
-        data class SubProgramStart(val functionName: String,
-                                   val declRange: Range.Range,
-                                   val persist: Boolean = true,
-                                   override val node: DwarfMethod) : ScopeStart(node) {
+        data class SubProgramStart(
+            val functionName: String,
+            val declRange: Range.Range,
+            override val persist: Boolean = true,
+            override val node: DwarfMethod
+        ) : ScopeStart(node) {
             override fun toString(): String {
                 return "(_sp_${node.getDepth()} (function body in source: $declRange)"
             }
 
             override fun asPersistent(persistent: Boolean) = this.copy(persist = persistent)
 
-            override fun toAnnotations(locInst: LocatedSbfInstruction, dwarfView: TACDebugView) = listOf(SnippetCmd.SolanaSnippetCmd.ExplicitDebugPushAction(StackEntry.SolanaFunction(functionName, declRange), persist).toAnnotation())
+            override fun toAnnotations(locInst: LocatedSbfInstruction, dwarfView: TACDebugView) = listOf(
+                SnippetCmd.SolanaSnippetCmd.ExplicitDebugPushAction(
+                    StackEntry.SolanaFunction(
+                        functionName,
+                        declRange
+                    ), persist
+                ).toAnnotation()
+            )
 
             override fun usedRegisters(): Set<Value.Reg> = setOf()
         }
@@ -147,9 +182,12 @@ sealed interface DWARFCfgEdgeLabel {
      * stop next (these come from DWARF .debug_line information.)
      */
     data class DebugStep(val range: Range.Range) : DWARFCfgEdgeLabel {
-        override fun toAnnotations(locInst: LocatedSbfInstruction, dwarfView: TACDebugView): List<TACCmd.Simple.AnnotationCmd> {
+        override fun toAnnotations(
+            locInst: LocatedSbfInstruction,
+            dwarfView: TACDebugView
+        ): List<TACCmd.Simple.AnnotationCmd> {
             return if (range.isInSources()) {
-                listOf(SnippetCmd.ExplicitDebugStep(range).toAnnotation())
+                listOf(createExplicitDebugStepAnnotation(range))
             } else {
                 emptyList()
             }
@@ -172,15 +210,29 @@ sealed interface DWARFCfgEdgeLabel {
      * When this edge label is inserted it means the variable contained in [variableInfo]
      * is live after the label.
      */
-    data class VariableBecomingLive(val stackLevel: CallStackLevel, val variableInfo: SourceVariableDebugInformation, val persist: Boolean = true) : DWARFCfgEdgeLabel {
+    data class VariableBecomingLive(
+        val stackLevel: CallStackLevel,
+        val variableInfo: SourceVariableDebugInformation,
+        override val persist: Boolean = true
+    ) : DWARFCfgEdgeLabel {
         private fun toAnnotations(displayPathExpressions: Map<Offset, DWARFExpression>): List<TACCmd.Simple.AnnotationCmd> {
             if (stackLevel.scopes.any { !it.getDeclRange().isInSources() } || variableInfo.variableType == null) {
                 return emptyList()
             }
-            return listOf(SnippetCmd.SolanaSnippetCmd.VariableBecomingLive(variableInfo.variableName, variableInfo.variableType, displayPathExpressions, persist = persist).toAnnotation())
+            return listOf(
+                SnippetCmd.SolanaSnippetCmd.VariableBecomingLive(
+                    variableInfo.variableName,
+                    variableInfo.variableType,
+                    displayPathExpressions,
+                    persist = persist
+                ).toAnnotation()
+            )
         }
 
-        override fun toAnnotations(locInst: LocatedSbfInstruction, dwarfView: TACDebugView): List<TACCmd.Simple.AnnotationCmd> {
+        override fun toAnnotations(
+            locInst: LocatedSbfInstruction,
+            dwarfView: TACDebugView
+        ): List<TACCmd.Simple.AnnotationCmd> {
             if (variableInfo.variableType == null) {
                 return toAnnotations(mapOf(Offset(0UL) to DWARFExpression.StringValue("(No variable type given)")))
             }
@@ -195,7 +247,7 @@ sealed interface DWARFCfgEdgeLabel {
                 ops.toExpression { registerAccess, asStackValue ->
                     val register = Value.Reg(SbfRegister.getByValue(registerAccess.register()))
                     if (asStackValue) {
-                        if (registerAccess.register() == SbfRegister.R10_STACK_POINTER.value) {
+                        if (registerAccess.register() == SbfRegister.R10.value) {
                             if (stackLevel.frameBasePointer == null) {
                                 return@toExpression DWARFExpression.StringValue("Cannot compute information relative to frame base without frame base pointer given.")
                             }
@@ -203,7 +255,8 @@ sealed interface DWARFCfgEdgeLabel {
                                 SBF_STACK_START.toBigInteger() +
                                     SolanaConfig.StackFrameSize.get()
                                     + stackLevel.frameBasePointer.toBigInteger()
-                                    + registerAccess.offset().toBigInteger())
+                                    + registerAccess.offset().toBigInteger()
+                            )
                         }
                     }
                     when (registerAccess) {
@@ -211,7 +264,8 @@ sealed interface DWARFCfgEdgeLabel {
                             if (stackLevel.frameBasePointer == null) {
                                 return@toExpression DWARFExpression.StringValue("Cannot compute information relative to frame base without frame base pointer given.")
                             }
-                            val baseOffset = stackLevel.frameBasePointer + field.offset.toLong() + registerAccess.offset()
+                            val baseOffset =
+                                stackLevel.frameBasePointer + field.offset.toLong() + registerAccess.offset()
                             val variable = dwarfView.getStackTACVariable(locInst, register, PTAOffset(baseOffset))
                             variable?.let { tacVar -> DWARFExpression.ModelValue(tacVar) }
                                 ?: DWARFExpression.StringValue("Cannot find TAC variable at offset $baseOffset from frame base.")
@@ -221,7 +275,8 @@ sealed interface DWARFCfgEdgeLabel {
                         is RegisterOffset -> DWARFExpression.BinaryExpr(
                             Plus,
                             DWARFExpression.ModelValue(dwarfView.getRegisterTACVariable(register)),
-                            DWARFExpression.Constant(registerAccess.offset().toBigInteger()))
+                            DWARFExpression.Constant(registerAccess.offset().toBigInteger())
+                        )
                     }
                 }?.let { field to it }
             }
@@ -232,11 +287,11 @@ sealed interface DWARFCfgEdgeLabel {
         override fun asPersistent(persistent: Boolean) = this.copy(persist = persistent)
         override fun toString(): String {
             val postFix = if (variableInfo.operations.isEmpty()) {
-                "has no debug information (optimized out)"
+                "has no DWARF information (optimized out)"
             } else {
-                "stored in ${variableInfo.operations}"
+                "stored in DWARF .debug_loc ${variableInfo.operations}"
             }
-            return "Variable becoming life ${variableInfo.variableName} $postFix (${persist})"
+            return "Source variable named `${variableInfo.variableName}` (of method ${stackLevel.scopes.joinToString { it.getMethodName() }}) $postFix"
         }
 
         override fun usedRegisters(): Set<Value.Reg> {
@@ -244,14 +299,27 @@ sealed interface DWARFCfgEdgeLabel {
         }
 
     }
+
     /**
      * When this edge label is inserted, there is a direct memory access at [instruction] that matches the DWARF operations in [operations]
      * The actual field that will be access is contained in [variableDebugInfo].
      *
      * (Note, only the formatting in [report.calltrace.formatter.SolanaCallTraceValueFormatter] will resolve which field was actually accessed).
      */
-    data class DirectMemoryAccess(val stackLevel: CallStackLevel, val variableDebugInfo: SourceVariableDebugInformation, val offsetIntoStruct: Offset, val operations: List<DWARFOperation>, val instruction: SbfInstruction, val loadedValue: Value, val persist: Boolean = true) : DWARFCfgEdgeLabel {
-        override fun toAnnotations(locInst: LocatedSbfInstruction, dwarfView: TACDebugView): List<TACCmd.Simple.AnnotationCmd> {
+    data class DirectMemoryAccess(
+        val stackLevel: CallStackLevel,
+        val variableDebugInfo: SourceVariableDebugInformation,
+        val offsetIntoStruct: Offset,
+        val operations: List<DWARFOperation>,
+        val instruction: SbfInstruction,
+        /** if instruction is a load then operand is the lhs, otherwise it is the stored value **/
+        val operand: Value,
+        override val persist: Boolean = true
+    ) : DWARFCfgEdgeLabel {
+        override fun toAnnotations(
+            locInst: LocatedSbfInstruction,
+            dwarfView: TACDebugView
+        ): List<TACCmd.Simple.AnnotationCmd> {
             if (stackLevel.scopes.any { !it.getDeclRange().isInSources() } || variableDebugInfo.variableType == null) {
                 return emptyList()
             }
@@ -259,16 +327,27 @@ sealed interface DWARFCfgEdgeLabel {
                 //Handle offset
                 //Handle asStackValue (second parameter)
                 //Handle R10 STACK_POINTER
-                val tacSymbol = DWARFExpression.ModelValue(dwarfView.getRegisterTACVariable(this.loadedValue as Value.Reg))
-                tacSymbol
+                val s = when(operand) {
+                    is Value.Imm -> TACSymbol.Const(BigInteger.valueOf(operand.v.toLong()))
+                    is Value.Reg -> dwarfView.getRegisterTACVariable(operand)
+                }
+                DWARFExpression.ModelValue(s)
             } ?: return emptyList()
 
-            return listOf(SnippetCmd.SolanaSnippetCmd.DirectMemoryAccess(variableDebugInfo.variableName, variableDebugInfo.variableType, offsetIntoStruct, tacifiedExpr, persist).toAnnotation())
+            return listOf(
+                SnippetCmd.SolanaSnippetCmd.DirectMemoryAccess(
+                    variableDebugInfo.variableName,
+                    variableDebugInfo.variableType,
+                    offsetIntoStruct,
+                    tacifiedExpr,
+                    persist
+                ).toAnnotation()
+            )
         }
 
         override fun asPersistent(persistent: Boolean) = this.copy(persist = persistent)
         override fun toString(): String {
-            return "Memory load on variable ${variableDebugInfo.variableName} at ($offsetIntoStruct) via ${variableDebugInfo.operations}  (${persist})"
+            return "Memory load on source variable named `${variableDebugInfo.variableName}` (of method ${stackLevel.scopes.joinToString { it.getMethodName() }}) at offset (${offsetIntoStruct.offset}) via ${variableDebugInfo.operations}"
         }
 
         override fun usedRegisters(): Set<Value.Reg> {
@@ -276,6 +355,19 @@ sealed interface DWARFCfgEdgeLabel {
         }
     }
 
+    companion object {
+        /**
+         * Creates an [TACCmd.Simple.AnnotationCmd] from [SnippetCmd.ExplicitDebugStep] and adds [TACMetaInfo]
+         * to the command. This will provide source tooltips for this statement in the TAC dumps.
+         */
+        private fun createExplicitDebugStepAnnotation(range: Range.Range): TACCmd.Simple.AnnotationCmd {
+            return SnippetCmd.ExplicitDebugStep(range).toAnnotation().let {annot ->
+                range.toHeuristicSourceSegment()?.let { sgmt ->
+                    annot.plusMeta(SBF_SOURCE_SEGMENT, sgmt)
+                } ?: annot
+            }
+        }
+    }
 }
 
 
@@ -300,11 +392,11 @@ fun List<DWARFOperation>.toExpression(translateRegisterAccess: (RegisterAccess, 
             Minus,
             Or,
             Plus -> {
-                check(stack.size >= 2) { "Expected to have at least two elements on the stack, got number of elements:  ${stack.size}, ${this}" }
-                val left = stack[stack.lastIndex];
-                stack.removeAt(stack.lastIndex);
-                val right = stack[stack.lastIndex];
-                stack.removeAt(stack.lastIndex);
+                check(stack.size >= 2) { "Expected to have at least two elements on the stack, got number of elements:  ${stack.size}, $this" }
+                val left = stack[stack.lastIndex]
+                stack.removeAt(stack.lastIndex)
+                val right = stack[stack.lastIndex]
+                stack.removeAt(stack.lastIndex)
                 stack.add(DWARFExpression.BinaryExpr(operation, left, right))
             }
 

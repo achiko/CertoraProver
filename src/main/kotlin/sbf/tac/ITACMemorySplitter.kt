@@ -19,7 +19,6 @@ package sbf.tac
 
 import sbf.cfg.LocatedSbfInstruction
 import sbf.disassembler.SbfRegister
-import sbf.domains.Constant
 import sbf.domains.MemSummaryArgumentType
 import sbf.domains.PTAOffset
 
@@ -56,14 +55,13 @@ interface TACMemSplitter {
      *  Represent a memory load or store from/to the stack in TAC.
      *
      *  @param variables maps stack offsets (relative to `r10`) to TAC variables. These offsets are always negative.
-     *  @param preservedValues maps a stack offset to [Constant] value corresponding to the left-hand side of a load instruction.
-     *  These constants are used to preserve soundness when the pointer domain creates cells from splitting or merging existing cells.
-     *  If the constant is top then the corresponding left-hand side is havoced.
+     *  @param reconstructedValues maps each stack offset to the value last written there (from the scalar domain), populated only
+     *  when the pointer domain reconstructed the cell via split or merge. A top value means the write is unknown and the load result is havoced.
      *  @param locationsToHavoc is the scalars or byte map indexes that must be havoced by the memory operation.
      **/
     data class StackLoadOrStoreInfo(
         val variables: Map<PTAOffset, TACByteStackVariable>,
-        val preservedValues: Map<PTAOffset, Constant>,
+        val reconstructedValues: Map<PTAOffset, PTAMemSplitter.ReconstructedIntegerValue>,
         val locationsToHavoc: HavocMemLocations): LoadOrStoreInfo()
 
     /**
@@ -238,10 +236,10 @@ interface TACMemSplitter {
             if (scalarsReg == byteMapReg) {
                 throw TACTranslationError("creating an invalid MixedRegionsTACMemCmpInfo object (1)")
             }
-            if (!(scalarsReg >= SbfRegister.R1_ARG && scalarsReg <= SbfRegister.R2_ARG) ) {
+            if (!(scalarsReg >= SbfRegister.R1 && scalarsReg <= SbfRegister.R2) ) {
                 throw TACTranslationError("creating an invalid MixedRegionsTACMemCmpInfo object (2)")
             }
-            if (!(byteMapReg >= SbfRegister.R1_ARG && byteMapReg <= SbfRegister.R2_ARG) ) {
+            if (!(byteMapReg >= SbfRegister.R1 && byteMapReg <= SbfRegister.R2) ) {
                 throw TACTranslationError("creating an invalid MixedRegionsTACMemCmpInfo object (3)")
             }
         }

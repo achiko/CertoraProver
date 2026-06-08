@@ -35,7 +35,6 @@ import utils.CollectingResult.Companion.lift
 import utils.CollectingResult.Companion.map
 import utils.Range
 import java.io.FilterInputStream
-import java.io.Reader
 
 sealed class CVLInput {
 
@@ -46,34 +45,31 @@ sealed class CVLInput {
          * Receives a [resolver] for types.
          */
         fun parseCVLSpec(cvlSource: CVLSource, resolver: TypeResolver): CollectingResult<CVLAst, CVLError> {
-            val reader = cvlSource.getReader()
-            return reader.use { cvlReader ->
-                parseCVLSpecFromReader(cvlReader, cvlSource.isImported, resolver, cvlSource.origpath) // TODO Merge: Config.prependInternalDir(cvlFile)
+            return parseRawCVLSpec(cvlSource).bind {
+                it.toCVLAst(resolver, CVLScope.AstScope)
             }
         }
 
-        /**
-         * Parses and returns an AST given a [reader] of the CVL contents, with file name indication [fileName],
-         * a type [resolver], and a boolean setting if the file is imported or not [isImportedCvlSource].
-         */
-        private fun parseCVLSpecFromReader(reader: Reader, isImportedCvlSource: Boolean, resolver: TypeResolver, fileName: String): CollectingResult<CVLAst, CVLError> {
-            val csf = ComplexSymbolFactory()
-            val lexer = Lexer(csf, reader)
-            val vmConfig = Config.VMConfig
-            val allKeywords = allCastFunctions.toList() + vmConfig.memoryLocations.toList() +
+        fun parseRawCVLSpec(cvlSource: CVLSource): CollectingResult<Ast, CVLError> {
+            val isImportedCvlSource = cvlSource.isImported
+            val fileName = cvlSource.origpath
+            cvlSource.getReader().use { reader ->
+                val csf = ComplexSymbolFactory()
+                val lexer = Lexer(csf, reader)
+                val vmConfig = Config.VMConfig
+                val allKeywords = allCastFunctions.toList() + vmConfig.memoryLocations.toList() +
                     vmConfig.preReturnMethodQualifiers.toList() + vmConfig.postReturnMethodQualifiers.toList() + vmConfig.hookableOpcodes.toList()
-            check(allKeywords.distinct().size == allKeywords.size) { "duplicate keywords exist in $this which may lead to lexer ambiguities"}
-            lexer.setCastFunctions(allCastFunctions)
-            lexer.setMemoryLocations(vmConfig.memoryLocations)
-            lexer.setHookableOpcodes(vmConfig.hookableOpcodes)
-            lexer.setMethodQualifiers(vmConfig.preReturnMethodQualifiers, vmConfig.postReturnMethodQualifiers)
-            lexer.setConstVals(CVLKeywords.constVals.compute(vmConfig).keys)
-            lexer.setBuiltInFunctions(CVLBuiltInName.entries.mapTo(mutableSetOf()) {
-                it.bifName
-            })
-            lexer.theFilename = fileName
-            return ParserCVL.parse_with_errors(lexer, csf, fileName, isImportedCvlSource).bind { ast : Ast ->
-                ast.toCVLAst(resolver, CVLScope.AstScope)
+                check(allKeywords.distinct().size == allKeywords.size) { "duplicate keywords exist in $this which may lead to lexer ambiguities"}
+                lexer.setCastFunctions(allCastFunctions)
+                lexer.setMemoryLocations(vmConfig.memoryLocations)
+                lexer.setHookableOpcodes(vmConfig.hookableOpcodes)
+                lexer.setMethodQualifiers(vmConfig.preReturnMethodQualifiers, vmConfig.postReturnMethodQualifiers)
+                lexer.setConstVals(CVLKeywords.constVals.compute(vmConfig).keys)
+                lexer.setBuiltInFunctions(CVLBuiltInName.entries.mapTo(mutableSetOf()) {
+                    it.bifName
+                })
+                lexer.theFilename = cvlSource.origpath
+                return ParserCVL.parse_with_errors(lexer, csf, fileName, isImportedCvlSource)
             }
         }
 
@@ -223,6 +219,7 @@ sealed class CVLInput {
                 val impDefinitions: MutableList<CVLDefinition> = mutableListOf()
                 val impHooks: MutableList<CVLHook> = mutableListOf()
                 val impImportedContracts: MutableList<CVLImportedContract> = mutableListOf()
+                val impLinkEntries: MutableList<CVLLinkEntryBase> = mutableListOf()
 
                 val impRulesInUse: MutableList<ICVLRule> = mutableListOf()
                 val impInvsInUse: MutableList<CVLInvariant> = mutableListOf()
@@ -247,6 +244,7 @@ sealed class CVLInput {
                     )
                     impHooks.addAll(importedSpecFileAst.hooks)
                     impImportedContracts.addAll(importedSpecFileAst.importedContracts)
+                    impLinkEntries.addAll(importedSpecFileAst.linkEntries)
 
                     // Add rules and invariants that match the use declarations in [astWithoutMergedImports]
                     // NOTE: use declarations, as opposed to spec import declarations, are NOT transitive, i.e.,
@@ -307,6 +305,7 @@ sealed class CVLInput {
                         definitions = impDefinitions.also { it.addAll(astWithoutMergedImports.definitions) },
                         hooks = impHooks.also { it.addAll(astWithoutMergedImports.hooks) },
                         importedContracts = impImportedContracts.also { it.addAll(astWithoutMergedImports.importedContracts) },
+                        linkEntries = impLinkEntries.also { it.addAll(astWithoutMergedImports.linkEntries) },
                         importedSpecFiles = emptyList(), // Treat the "merged" .spec file as if it has no imports
                         overrideDeclarations = OverrideDeclarations() // Treat the "merged" .spec file as if it has no overrides
                     )

@@ -93,6 +93,8 @@ class RunSources(Util.NoValEnum):
     LIGHT_TEST = auto()
     REPORT = auto()
     TIMEOUTER = auto()
+    STATIC_ANALYZER = auto()
+    AUTO_PROVER = auto()
 
 
 class WaitForResultOptions(Util.NoValEnum):
@@ -270,6 +272,17 @@ def validate_soroban_extension(filename: str) -> str:
     if not filename.lower().endswith(Util.SOROBAN_EXEC_EXTENSION):
         raise Util.CertoraUserInputError(f"{filename} does not end with {Util.SOROBAN_EXEC_EXTENSION}")
     return filename
+
+
+SOLANA_SBF_ARCH_VALUES = ['sbf', 'v0', 'v1', 'v2', 'v3']
+
+
+def validate_solana_sbf_arch(value: str) -> str:
+    if value not in SOLANA_SBF_ARCH_VALUES:
+        raise Util.CertoraUserInputError(
+            f"Invalid --solana_sbf_arch value '{value}'. Must be one of: {', '.join(SOLANA_SBF_ARCH_VALUES)}"
+        )
+    return value
 
 
 def validate_solana_extension(filename: str) -> str:

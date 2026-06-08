@@ -19,6 +19,7 @@ package analysis.opt
 
 import analysis.TACProgramPrinter
 import analysis.numeric.MAX_UINT
+import analysis.opt.PatternRewriter.Key.*
 import analysis.opt.PatternRewriter.PatternHandler
 import analysis.opt.intervals.IntervalsRewriter
 import instrumentation.transformers.FilteringFunctions
@@ -218,5 +219,72 @@ class PatternRewriterTest : TACBuilderAuxiliaries() {
         }
     }
 
+    @Test
+    fun testFixedPointMultiply() {
+        // Mirrors the pattern:
+        //   I_hi = (X >> 14) *int Y
+        //   R_lo = safeMathNarrow(0x4000000000000 *int X) & mask64
+        //   I_prod = Y *int R_lo
+        //   result = (safeMathNarrow(I_prod) >> 0x40) +int safeMathNarrow(I_hi)
+        // Should simplify to: (X *int Y) /int 2^14
+        val mask64 = BigInteger("ffffffffffffffff", 16).asTACExpr
+        val c2pow50 = BigInteger("4000000000000", 16).asTACExpr
+        val prog = TACProgramBuilder {
+            // high part
+            c assign ShiftRightLogical(aS, 0xe.asTACExpr)          // c = a >> 14
+            i assign IntMul(cS, bS)                                 // i = c *int b = (a >> 14) *int b
+            d assign safeMathNarrow(iS, Tag.Bit256)                 // d = safeMathNarrow(i)
+            // low part
+            j assign IntMul(c2pow50, aS)                            // j = 0x4000000000000 *int a
+            e assign safeMathNarrow(jS, Tag.Bit256)                 // e = safeMathNarrow(j)
+            f assign BWAnd(eS, mask64)                              // f = e & mask64
+            k assign IntMul(bS, fS)                                 // k = b *int f
+            g assign safeMathNarrow(kS, Tag.Bit256)                 // g = safeMathNarrow(k)
+            h assign ShiftRightLogical(gS, 0x40.asTACExpr)          // h = g >> 0x40
+            // merge
+            s assign IntAdd(hS, dS)                                 // s = h +int d
+        }
+        checkStat(prog, "fixed-point-multiply", 1, PatternRewriter::solanaPatternsList)
+    }
+
+    @Test
+    fun testConstMulSplit() {
+        // Mirrors the pattern:
+        //   low  = safeMathNarrow(0x4000 *int X) & mask64
+        //   high = 0x10000000000000000 *int (X >> 0x32)
+        //   result = safeMathNarrow(high) +int low
+        // Should simplify to: X *int 0x4000
+        val mask64 = BigInteger("ffffffffffffffff", 16).asTACExpr
+        val c0x4000 = BigInteger("4000", 16).asTACExpr
+        val c2pow64 = BigInteger.ONE.shiftLeft(64).asTACExpr
+        val prog = TACProgramBuilder {
+            // low part
+            i assign IntMul(c0x4000, aS)                                // i = 0x4000 *int a
+            b assign safeMathNarrow(iS, Tag.Bit256)                     // b = safeMathNarrow(i)
+            c assign BWAnd(bS, mask64)                                  // c = b & mask64
+            // high part
+            d assign ShiftRightLogical(aS, 0x32.asTACExpr)              // d = a >> 0x32
+            j assign IntMul(c2pow64, dS)                                // j = 2^64 *int d
+            e assign safeMathNarrow(jS, Tag.Bit256)                     // e = safeMathNarrow(j)
+            // merge
+            s assign IntAdd(eS, cS)                                     // s = e +int c
+        }
+        checkStat(prog, "const-mul-split", 1, PatternRewriter::solanaPatternsList)
+    }
+
+    @Test
+    fun testFixedPointMultiply2() {
+        // safeMathNarrow(X *int safeMathNarrow(C *int Y)) >> K
+        // where C=2^50, K=64 → result = safeMathNarrow((X *int Y) /int 2^14)
+        val c2pow50 = BigInteger("4000000000000", 16).asTACExpr
+        val prog = TACProgramBuilder {
+            i assign IntMul(c2pow50, aS)                               // i = 2^50 *int a
+            b assign safeMathNarrow(iS, Tag.Bit256)                    // b = safeMathNarrow(i)
+            j assign IntMul(aS, bS)                                    // j = a *int b
+            d assign safeMathNarrow(jS, Tag.Bit256)                    // d = safeMathNarrow(j)
+            e assign ShiftRightLogical(dS, 0x40.asTACExpr)             // e = d >> 64
+        }
+        checkStat(prog, "fixed-point-multiply-2", 1, PatternRewriter::solanaPatternsList)
+    }
 
 }

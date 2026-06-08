@@ -18,6 +18,8 @@
 package optimizer
 
 import analysis.*
+import bridge.ContractInstanceInSDC
+import bridge.types.SolidityTypeDescription
 import compiler.applyKeccak
 import config.Config
 import datastructures.stdcollections.*
@@ -25,7 +27,7 @@ import evm.EVM_WORD_SIZE
 import evm.EVM_WORD_SIZE_INT
 import log.*
 import tac.Tag
-import utils.mapNotNull
+import utils.*
 import vc.data.*
 import java.math.BigInteger
 import java.util.stream.Stream
@@ -40,7 +42,7 @@ import java.util.stream.Stream
  * - Unsoundness. See rule `update` in `Test/StorageOptimize/eq.spec` - we don't see the write to 0 since we're querying the constant slot
  *
  * We will therefore replace those pre-computed constants with the original hash applications.
- * We can do that because the Solidity compiler, despite the optimizations, is too lazy to optimize away the memory writes
+ * We can do that because the Solidity compiler, despite the optimizations, usually does not optimize away the memory writes
  * reserved for hash computations (aka M[0x0] and M[0x20]).
  *
  * We can then, for each storage access to a constant slot, attempt to resolve M[0x0] and M[0x20] and
@@ -49,6 +51,9 @@ import java.util.stream.Stream
  * This gets especially tricky if structs are involved, since the offset to a particular field in the struct is also optimized.
  * We will utilize the already existing configuration ([Config.StructSizeLimit]) for struct sizes to allow deviations from the hash result.
  * The same applies to constant indices of an array.
+ *
+ * (In cases where the compiler does optimize away the memory writes, we still try to make some educated guesses based
+ * on the known storage slots, but support for this is currently quite limited.)
  *
  * ## Limitations
  * Our ability to actually rebuild the access path is limited though,
@@ -62,7 +67,22 @@ import java.util.stream.Stream
  * Thus, the process of "unoptimizing" is only for attempting to rebuild more of the structure for the sake of the storage analysis.
  * Precise SMT handling should be corrected by correcting the hash model we use.
  */
-class UnoptimizeHashResults(private val code: CoreTACProgram) {
+class UnoptimizeHashResults(
+    private val code: CoreTACProgram,
+    private val knownStorageSlots: Set<BigInteger>
+) {
+    companion object {
+        private fun knownArraySlots(source: ContractInstanceInSDC): Set<BigInteger> =
+            source.storageLayout?.storage.orEmpty().filter {
+                it.descriptor is SolidityTypeDescription.Array
+            }.mapToSet {
+                it.slot
+            }
+    }
+
+    constructor(code: CoreTACProgram, source: ContractInstanceInSDC)
+        : this(code, knownArraySlots(source))
+
     private val g = code.analysisCache.graph
     private val def = NonTrivialDefAnalysis(g)
     private val patch = code.toPatchingProgram()
@@ -156,12 +176,23 @@ class UnoptimizeHashResults(private val code: CoreTACProgram) {
      */
     private val hashConst = PatternMatcher.Pattern.FromConstant(
         extractor = { c, where ->
+            /*
+                To reverse the hash, we try some known plausible constants.  One is the current value of M[0x0]; as
+                noted above, the Solidity compiler often doesn't optimize away the write to M[0x0] when optimizing
+                hashes.
+
+                Sometimes the compiler *does* optimize this away, though, so we also try all of the known storage
+                slots.
+             */
             val mem0Const = constantAt.mustBeConstantAt(where = where.ptr, TACKeyword.MEM0.toVar())
-            val hash = mem0Const?.let { hashBigInts(mem0Const) }
-            if (hash != null && c.value >= hash && (c.value - hash) < Config.StructSizeLimit.get().toBigInteger()) {
-                Triple(where, mem0Const, c.value - hash)
-            } else {
-                null
+            val unhashedConstsToTry = sequenceOfNotNull(mem0Const) + knownStorageSlots.asSequence()
+            unhashedConstsToTry.firstNotNullOfOrNull { unhashed ->
+                val hash = hashBigInts(unhashed)
+                if (c.value >= hash && (c.value - hash) < Config.StructSizeLimit.get().toBigInteger()) {
+                    Triple(where, unhashed, c.value - hash)
+                } else {
+                    null
+                }
             }
         },
         out = { _, it -> it}

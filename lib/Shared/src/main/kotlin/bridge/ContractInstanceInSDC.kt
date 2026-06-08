@@ -233,7 +233,7 @@ data class ContractInstanceInSDC(
     val origSrcContext by lazy { SourceContext(srclist, origSourceDir) }
     val constructorSrcMappings by lazy { parseSrcMapping(constructorSrcmap) }
 
-    val isLibrary : Boolean get() = methods.any { it.isLibrary }
+    val isLibrary : Boolean get() = allMethods.any { it.isLibrary }
 
     fun sourceSegment(): SourceSegment? {
         val sourceBytes = this.sourceBytes ?: return null

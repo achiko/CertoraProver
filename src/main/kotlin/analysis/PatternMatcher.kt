@@ -25,6 +25,7 @@ import analysis.PatternMatcher.VariableMatch.Continue
 import analysis.PatternMatcher.VariableMatch.Match
 import analysis.PatternMatcher.compilePattern
 import log.*
+import tac.MetaKey
 import utils.*
 import vc.data.TACCmd
 import vc.data.TACExpr
@@ -1072,6 +1073,20 @@ object PatternMatcher {
             override fun toSymbolPredicate(): SymbolPredicate<R> = this::expectVariable
             override fun extract(p : CmdPointer, e: TACExpr) =
                 (e as? TACExpr.Apply)?.takeIf { it.ops.size == 1 }?.let { extractor(p, it) }
+        }
+
+        data class FromAnnotationExp<K : java.io.Serializable, R, T>(
+            val k: MetaKey<K>,
+            val extractor: (CmdPointer, TACExpr.AnnotationExp<K>) -> TACSymbol?,
+            override val inner: Pattern<T>,
+            override val out: (LTACCmd, T) -> R,
+            override val patternName: String? = null
+        ) : UnaryOpOrApply<R, T>() {
+            override fun toSymbolPredicate(): SymbolPredicate<R> = this::expectVariable
+            override fun extract(p : CmdPointer, e: TACExpr) =
+                (e as? TACExpr.AnnotationExp<*>)
+                    ?.takeIf { it.annot.k == k }
+                    ?.let { extractor(p, it.uncheckedAs<TACExpr.AnnotationExp<K>>()) }
         }
 
         /**
@@ -2478,7 +2493,7 @@ object PatternMatcher {
                 }
                 return if (first is TACCmd.Simple.AssigningCmd.AssignExpCmd) {
                     when (val rhs = first.rhs) {
-                        is TACExpr.UnaryExp, is TACExpr.Apply -> {
+                        is TACExpr.UnaryExp, is TACExpr.Apply, is TACExpr.AnnotationExp<*> -> {
                             patt.taggedDebug {
                                 "Reached definition in-terms of ${rhs}, at ${graph.elab(where)}"
                             }

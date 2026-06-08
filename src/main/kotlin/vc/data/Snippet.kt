@@ -42,6 +42,7 @@ import report.calltrace.sarif.FmtArg
 import report.calltrace.sarif.Sarif
 import report.calltrace.sarif.SarifFormatter
 import sbf.dwarf.DWARFExpression
+import sbf.support.base58Encode
 import solver.CounterexampleModel
 import spec.cvlast.*
 import spec.cvlast.typedescriptors.EVMTypeDescriptor
@@ -318,7 +319,7 @@ sealed class SnippetCmd: AmbiSerializable {
                     storageType,
                     contractInstance,
                     range,
-                    LinkableStorageReadId(storageLoadCmd, displayPath)
+                    LinkableStorageReadId(storageLoadCmd)
                 )
 
                 /**
@@ -334,18 +335,14 @@ sealed class SnippetCmd: AmbiSerializable {
                          * (expected to be either a [TACCmd.Simple.AssigningCmd.WordLoad], or a [TACCmd.Simple.AssigningCmd.AssignExpCmd]
                          * whose rhs is a [TACSymbol.Var] representing a (split) storage slot read),
                          * was determined by the [CallGraphBuilder] to load an unresolved target address of an external call
-                         * ([CallGraphBuilder.ContractStorageRead]), and [displayPath] suggests what this address
-                         * could be resolved by the user using --link.
+                         * ([CallGraphBuilder.ContractStorageRead]).
                          * Otherwise, returns [LinkableStorageReadId.None]
                          */
                         operator fun invoke(
                             storageLoadCmd: TACCmd.Simple.AssigningCmd,
-                            displayPath: DisplayPath
                         ): LinkableStorageReadId =
                             storageLoadCmd.meta.find(CallGraphBuilder.ContractStorageRead.META_KEY)?.let {
-                                // Currently, CVT only enables linking of either root storage slots or struct fields.
-                                it.id.takeIf { (displayPath is DisplayPath.Root) || displayPath is DisplayPath.FieldAccess }
-                                    ?.let(LoadSnippet::Id) ?: None
+                                LoadSnippet.Id(it.id)
                             } ?: None
                     }
 
@@ -1525,6 +1522,17 @@ sealed class SnippetCmd: AmbiSerializable {
     @KSerializable
     sealed class CvlrSnippetCmd : SnippetCmd() {
 
+        /**
+         * Returns the [BigInteger] associated with [v] in the model. Ensures that only the lowest 64 bits of the number are
+         * possibly non-zero, while the highest 192 bits are zeroed. This is useful because negative numbers are sign-extended:
+         * for example, -1 is represented as 256 bits with all 1s, but we only care about the lowest 64 bits of the number,
+         * so the highest 192 bits are cleared.
+         */
+        protected fun CounterexampleModel.get64BitsNumber(v: TACSymbol.Var): BigInteger? =
+            valueAsTACValue(v)?.asBigIntOrNull()?.let {
+                it and Tag.Bit64.maxUnsigned
+            }
+
         @KSerializable
         data class CexPrintU64AsFixedOrDecimal(
             val displayMessage: String,
@@ -1565,6 +1573,69 @@ sealed class SnippetCmd: AmbiSerializable {
             }
         }
 
+        /**
+         * The pubkey is given as four words of 8 bytes each.
+         */
+        @KSerializable
+        data class PrintPubkey(
+            val displayMessage: String,
+            val w0: TACSymbol.Var,
+            val w1: TACSymbol.Var,
+            val w2: TACSymbol.Var,
+            val w3: TACSymbol.Var
+        ) : CvlrSnippetCmd(), TransformableVarEntityWithSupport<PrintPubkey> {
+            override val support: Set<TACSymbol.Var> get() = setOf(w0,w1,w2,w3)
+            override fun transformSymbols(f: (TACSymbol.Var) -> TACSymbol.Var) =
+                PrintPubkey(displayMessage, w0 = f(w0), w1 = f(w1), w2 = f(w2), w3 = f(w3))
+
+            /** Create number `(w3 << 192) + (w2 << 128) + (w1 << 64) + w0` using the concrete values of [model] **/
+            private fun asU256(model: CounterexampleModel): BigInteger? {
+                val w0 = model.get64BitsNumber(w0) ?: return null
+                val w1 = model.get64BitsNumber(w1) ?: return null
+                val w2 = model.get64BitsNumber(w2) ?: return null
+                val w3 = model.get64BitsNumber(w3) ?: return null
+                return w3.shl(192) + w2.shl(128) + w1.shl(64) + w0
+            }
+
+            /**
+             * Merge the four 64-bit words [w0]..[w3] into the 32-byte Solana pubkey and returns its
+             * Base58 representation.
+             */
+            private fun asBase58(model: CounterexampleModel): String? {
+                /**
+                 *  `BigInteger.toByteArray()` returns `ceil((bitLength() + 1) / 8)` bytes. The +1 is for the sign bit.
+                 *  - When w3 has bit 63 set, bigInt has bit 255 set, so `bitLength() = 256`.
+                 *    That gives `ceil(257/8) = ceil(32.125) = 33` bytes, with a leading 0x00 to indicate the number is positive.
+                 *  - When w3 has bit 63 clear, `bitLength() ≤ 255`, giving `ceil(256/8) = 32 bytes` — no extra byte needed.
+                 **/
+                val num = asU256(model) ?: return null
+                val rawBytes = num.toByteArray()
+                val normalized = if (rawBytes.size == 33 && rawBytes[0] == 0.toByte()) {
+                    rawBytes.drop(1).toByteArray()
+                } else {
+                    rawBytes
+                }
+                // toByteArray() returns bytes in big-endian
+                val bytes = normalized.reversedArray()
+                return base58Encode(bytes)
+            }
+
+            fun tryToSarif(model: CounterexampleModel): Sarif? {
+                val formatter = CallTraceValueFormatter(model)
+                val sarifFormatter = SarifFormatter(formatter)
+                val pubkeyAsBase58 = asBase58(model) ?: return null
+                val pubkeyAsU256 = asU256(model) ?: return null
+                return sarifFormatter.fmt(
+                    "$displayMessage: $pubkeyAsBase58 ({})", FmtArg.CtfValue.buildOrUnknown(
+                        tv = TACValue.valueOf(pubkeyAsU256),
+                        type = CVLType.PureCVLType.Primitive.UIntK(256),
+                        tooltip = "pubkey as u256 number"
+                    )
+                )
+            }
+        }
+
+
         @KSerializable
         data class CexPrintValues(val displayMessage: String, val symbols: List<TACSymbol.Var>) : CvlrSnippetCmd(),
             TransformableVarEntityWithSupport<CexPrintValues> {
@@ -1602,17 +1673,6 @@ sealed class SnippetCmd: AmbiSerializable {
             override val support: Set<TACSymbol.Var> get() = setOf(low, high)
             override fun transformSymbols(f: (TACSymbol.Var) -> TACSymbol.Var) =
                 CexPrint128BitsValue(displayMessage = displayMessage, low = f(low), high = f(high), signed = signed)
-
-            /**
-             * Returns the [BigInteger] associated with [v] in the model. Ensures that only the lowest 64 bits of the number are
-             * possibly non-zero, while the highest 192 bits are zeroed. This is useful because negative numbers are sign-extended:
-             * for example, -1 is represented as 256 bits with all 1s, but we only care about the lowest 64 bits of the number,
-             * so the highest 192 bits are cleared.
-             */
-            private fun CounterexampleModel.get64BitsNumber(v: TACSymbol.Var): BigInteger? =
-                valueAsTACValue(v)?.asBigIntOrNull()?.let {
-                    it and Tag.Bit64.maxUnsigned
-                }
 
             fun tryToSarif(model: CounterexampleModel): Sarif? {
                 val formatter = CallTraceValueFormatter(model)

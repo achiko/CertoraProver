@@ -1,0 +1,15 @@
+{
+	"rules": {
+		"complexMapLinked": "SUCCESS",
+		"dynInStaticLinked": "SUCCESS",
+		"mapDynLinked": "SUCCESS",
+		"mapMapLinked": "SUCCESS",
+		"mapStaticLinked": "SUCCESS",
+		"nestedDynDynLinked": "SUCCESS",
+		"staticInDynLinked": "SUCCESS",
+		"wcComplexMapWildcard": "SUCCESS",
+		"wildcardDynDyn": "SUCCESS",
+		"wildcardMapMap": "SUCCESS",
+		"wildcardMapMapPrecedence": "SUCCESS"
+	}
+}

@@ -50,7 +50,7 @@ class DummyMemSplitter<TNum : INumValue<TNum>, TOffset : IOffset<TOffset>, TFlag
                                                         TACMemSplitter.HavocMapBytes(listOf()))
             }
             SolanaFunction.SOL_MEMCMP -> {
-                val lenType = types.typeAtInstruction(locInst, SbfRegister.R3_ARG)
+                val lenType = types.typeAtInstruction(locInst, SbfRegister.R3)
                 if (lenType is SbfType.NumType) {
                     val len = lenType.value.toLongOrNull()
                     if (len != null) {
@@ -156,19 +156,30 @@ class PTAMemSplitter<TNum : INumValue<TNum>, TOffset : IOffset<TOffset>, TFlags:
     class PTANonStackFields(val v: List<PTAField>): PTAFields()
 
     /**
+     *  @param [v] is the integer value.
+     *  @param [layout] whether the value was reconstructed by splitting or merging cells
+     **/
+    data class ReconstructedIntegerValue(
+        val v: Constant,
+        val layout: PTAGraph.CellLayout
+    )
+
+    /**
      * Given a Deref `*(r+o)` from a load or store instruction:
      * @param c is the symbolic cell pointed by `r+o`.
      * @param stackPtr is the concrete cell pointed by `r10`.
-     * @param getReconstructedIntegerValue is a function to extract the integer value stored in [c] if [c] is a cell constructed from merging/splitting.
-     *   - if returns `null` then no reconstruction took place during the pointer analysis
-     *   - if returns `Top` then reconstruction happened but the exact integer value is not known
-     *   - if returns `non-Top` then reconstruction happened and the exact value is known
+     * @param getReconstructedIntegerValue returns non-null only when [c] was reconstructed via split or merge (load/store width mismatch).
+     *   - `null`: no reconstruction — load width matches the last store width
+     *   - non-null with top value: reconstruction happened but the stored value is statically unknown
+     *   - non-null with concrete value: reconstruction happened and the exact stored value is known
      * @param killedFields overlapping cells killed by the pointer analysis during the transfer function if instruction is a store
      */
-    data class PTALoadOrStoreInfo<Flags:IPTANodeFlags<Flags>>(val c: PTASymCell<Flags>,
-                                                              val stackPtr: PTACell<Flags>,
-                                                              val getReconstructedIntegerValue: (PTACell<Flags>) -> Constant?,
-                                                              val killedFields: PTAFields?): PTAMemoryInfo<Flags>() {
+    data class PTALoadOrStoreInfo<Flags:IPTANodeFlags<Flags>>(
+        val c: PTASymCell<Flags>,
+        val stackPtr: PTACell<Flags>,
+        val getReconstructedIntegerValue: (PTACell<Flags>) -> ReconstructedIntegerValue?,
+        val killedFields: PTAFields?
+    ): PTAMemoryInfo<Flags>() {
         init {
             if (c.getNode().isForwarding()) {
                 throw TACTranslationError("PTALoadOrStoreInfo should take only resolved cells (1)")
@@ -445,7 +456,7 @@ class PTAMemSplitter<TNum : INumValue<TNum>, TOffset : IOffset<TOffset>, TFlags:
             }.toMap()
 
 
-            val stackValueMap = derefSymOffset.toLongList()
+            val reconstructedValues = derefSymOffset.toLongList()
                 .map { offset ->
                     PTAOffset(offset - stackPtrOffset.v) to
                         memInfo.getReconstructedIntegerValue(derefN.createCell(offset))
@@ -458,7 +469,7 @@ class PTAMemSplitter<TNum : INumValue<TNum>, TOffset : IOffset<TOffset>, TFlags:
             }
             TACMemSplitter.StackLoadOrStoreInfo(
                 stackVarMap,
-                stackValueMap,
+                reconstructedValues,
                 getVarsToHavocAsStack(memInfo.killedFields, stackPtrOffset
                 )
             )
@@ -515,9 +526,9 @@ class PTAMemSplitter<TNum : INumValue<TNum>, TOffset : IOffset<TOffset>, TFlags:
             val (stackReg, nonStackReg) = if (isSrcStack) {
                 // memInfo.srcC corresponds to r2
                 // memInfo.dstC corresponds to r1
-                Pair(SbfRegister.R2_ARG, SbfRegister.R1_ARG)
+                Pair(SbfRegister.R2, SbfRegister.R1)
             }  else {
-                Pair(SbfRegister.R1_ARG, SbfRegister.R2_ARG)
+                Pair(SbfRegister.R1, SbfRegister.R2)
             }
             if (!stackC.isWordCompatible(length, wordSize)) {
                 TACMemSplitter.UnsupportedMemCmpInfo
@@ -850,8 +861,8 @@ class PTAMemSplitter<TNum : INumValue<TNum>, TOffset : IOffset<TOffset>, TFlags:
 
             val g = absVal.getPTAGraph()
             val scalars = absVal.getScalars()
-            val len = (scalars.getAsScalarValue(Value.Reg(SbfRegister.R3_ARG)).type() as? SbfType.NumType)?.value?.toLongOrNull()
-            val dstSc = g.getRegCell(Value.Reg(SbfRegister.R1_ARG))
+            val len = (scalars.getAsScalarValue(Value.Reg(SbfRegister.R3)).type() as? SbfType.NumType)?.value?.toLongOrNull()
+            val dstSc = g.getRegCell(Value.Reg(SbfRegister.R1))
             if (dstSc != null && len != null) {
                 if (dstSc.getNode() == g.getStack()) {
                     val overlapMap = getOverlapsFromStack(dstSc) {
@@ -881,7 +892,7 @@ class PTAMemSplitter<TNum : INumValue<TNum>, TOffset : IOffset<TOffset>, TFlags:
             private val absVal: MemoryDomain<TNum, TOffset, TFlags>
         ) : SummaryVisitor {
             private val sumFields = ArrayList<PTACallModifiedField<TFlags>>()
-            private val r10 = Value.Reg(SbfRegister.R10_STACK_POINTER)
+            private val r10 = Value.Reg(SbfRegister.R10)
             private val stackNode = absVal.getRegCell(r10)?.getNode()
 
             init {
@@ -923,7 +934,7 @@ class PTAMemSplitter<TNum : INumValue<TNum>, TOffset : IOffset<TOffset>, TFlags:
             locInst: LocatedSbfInstruction,
             absVal: MemoryDomain<TNum, TOffset, TFlags>
         ): PTACell<TFlags> {
-            val r10 = Value.Reg(SbfRegister.R10_STACK_POINTER)
+            val r10 = Value.Reg(SbfRegister.R10)
             val stackPtrSc = absVal.getRegCell(r10)
                 ?: throw TACTranslationError(
                     "memory partitioning failed at $locInst because cannot find a cell for r10"
@@ -1002,7 +1013,10 @@ class PTAMemSplitter<TNum : INumValue<TNum>, TOffset : IOffset<TOffset>, TFlags:
                                     locInst, c,
                                     inst.access.width,
                                     pre.getScalars())?.let{
-                                    Constant(it.getIntegerValue(pre.getScalars()))
+                                    ReconstructedIntegerValue(
+                                        Constant(it.getIntegerValue(pre.getScalars())),
+                                        it.cellLayout()
+                                    )
                                 }
                             },
                             if (inst.isLoad) { null } else { getKilledFields(inst, pre) })
@@ -1053,9 +1067,9 @@ class PTAMemSplitter<TNum : INumValue<TNum>, TOffset : IOffset<TOffset>, TFlags:
             val memInfo =
                 when (inst) {
                     is SbfInstruction.Call -> {
-                        val r1 = Value.Reg(SbfRegister.R1_ARG)
-                        val r2 = Value.Reg(SbfRegister.R2_ARG)
-                        val r3 = Value.Reg(SbfRegister.R3_ARG)
+                        val r1 = Value.Reg(SbfRegister.R1)
+                        val r2 = Value.Reg(SbfRegister.R2)
+                        val r3 = Value.Reg(SbfRegister.R3)
 
                         when (SolanaFunction.from(inst.name)) {
                             SolanaFunction.SOL_MEMCPY_TRUNC,

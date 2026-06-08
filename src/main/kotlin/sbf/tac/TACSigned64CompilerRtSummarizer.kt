@@ -17,11 +17,9 @@
 
 package sbf.tac
 
-import sbf.cfg.*
 import vc.data.*
 import datastructures.stdcollections.*
 import sbf.domains.*
-import utils.*
 
 /**
  * Summarize 64-bit signed division and modulo operations.
@@ -29,21 +27,24 @@ import utils.*
 open class SummarizeSignedInteger64CompilerRt<TNum : INumValue<TNum>, TOffset : IOffset<TOffset>, TFlags: IPTANodeFlags<TFlags>> {
 
     context(SbfCFGToTAC<TNum, TOffset, TFlags>)
-    fun summarizeDivdi3(
+    internal fun summarizeDivdi3(
         res: TACSymbol.Var,
-        @Suppress("UNUSED_PARAMETER")
         arg1: TACSymbol,
-        @Suppress("UNUSED_PARAMETER")
         arg2: TACSymbol
     ): List<TACCmd.Simple> {
-        return  listOf(
-            Debug.unsupported("Warning: __divdi3 is not modeled precisely in TAC", listOf(res)),
-            TACCmd.Simple.AssigningCmd.AssignHavocCmd(res)
-        )
+        return when (sbfTacB) {
+            is LazyMaskSbfTACBuilder -> listOf(
+                Debug.unsupported("Warning: __divdi3 is not modeled precisely in TAC", listOf(res)),
+                havoc(res)
+            )
+            else -> listOf(
+                assign(res, sbfTacB { arg1.asSym() sDiv arg2.asSym() })
+            )
+        }
     }
 
     context(SbfCFGToTAC<TNum, TOffset, TFlags>)
-    fun summarizeModdi3(
+    internal fun summarizeModdi3(
         res: TACSymbol.Var,
         @Suppress("UNUSED_PARAMETER")
         arg1: TACSymbol,
@@ -52,7 +53,7 @@ open class SummarizeSignedInteger64CompilerRt<TNum : INumValue<TNum>, TOffset : 
     ): List<TACCmd.Simple> {
         return listOf(
             Debug.unsupported("Warning: __moddi3 is not modeled precisely in TAC", listOf(res)),
-            TACCmd.Simple.AssigningCmd.AssignHavocCmd(res)
+            havoc(res)
         )
     }
 

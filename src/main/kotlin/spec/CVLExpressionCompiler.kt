@@ -1515,7 +1515,7 @@ class CVLExpressionCompiler(
                     val cmds = mutableListOf<TACCmd.Simple>()
 
                     // Build an assume/assert command to verify the safety of the cast
-                    val castCheckVar = TACSymbol.Var("cast_check", Tag.Bool)
+                    val castCheckVar = TACSymbol.Var("cast_check", Tag.Bool).toUnique()
                     cmds.add(TACCmd.Simple.AssigningCmd.AssignExpCmd(castCheckVar, f.safeCastExpr(inner.out)))
                     when (exp.castType) {
                         CastType.REQUIRE -> {

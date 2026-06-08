@@ -134,54 +134,6 @@ data class SMTCounterexampleModel(
     fun getReachableBadBlocks(): Set<NBId> = reachableBadNBIds
 
     override fun getAssignmentOf(v: TACSymbol.Var) = this.tacAssignments[v]
-    override fun cvlAssignments(fullyProcessedTAC: CoreTACProgram): Map<String, TACValue> {
-        val allVariables = mutableSetOf<TACSymbol.Var>()
-        // get all the variables in the TAC Program
-        fullyProcessedTAC.ltacStream().forEach { lc ->
-            val cmd = lc.cmd
-            cmd.getLhs()?.let { lhs -> allVariables.add(lhs) }
-            cmd.getRhs().filterIsInstance<TACSymbol.Var>().forEach { rhsVar -> allVariables.add(rhsVar) }
-        }
-
-        // map from CVL Name to TAC Name(s)
-        val extractedSymbolAllocations = mutableMapOf<String, MutableSet<TACSymbol.Var>>()
-        // get all relevant tac names for each cvl name
-        allVariables.forEach { v ->
-            v.meta.find(TACMeta.CVL_DISPLAY_NAME)?.let { cvlName ->
-                // namePrefix or smtRep?
-                extractedSymbolAllocations.getOrPut(cvlName) { mutableSetOf() }.add(v)
-            }
-        }
-
-
-        // map from tac name to it's originating cvl name
-        val tacVarToCVLName = mutableMapOf<TACSymbol.Var, String>()
-        extractedSymbolAllocations.entries.forEach { (cvlName, tacVars) ->
-            val firstModel = tacVars.firstOrNull()?.let { tacVar -> tacAssignments[tacVar] }
-            // it is possible for multiple instances of a given identifier in a cvl program (for example, x could be
-            // a parameter to a rule, and a parameter to a cvl function), so there is no way to be guaranteed that
-            // a cvl identifier corresponds to a unique value (though it often does) and when it does, then we can
-            // ask what the value (in the *global* counterexample) was given to that identifier. The below condition
-            // does not necessarily correspond to this condition "cvl id corresponds to unique tac value" (I'm not
-            // sure how we would check this since the value may pass through multiple variables), however, for our
-            // purposes, it is sufficient to ask "does this cvl id correspond to a unique counterexample/model
-            // value?" which is what this condition checks. Only when this condition is met do we add this to the
-            // cvl variable model
-            if (tacVars.all { tacVar -> tacAssignments[tacVar] == firstModel }) {
-                tacVars.forEach { tacVar -> tacVarToCVLName[tacVar] = cvlName }
-            }
-        }
-
-        // copy variable model to cvl versions of variables
-        return tacAssignments.mapNotNull { (varName, model) ->
-            // if there is no tac->cvl name mapping, the entry should not be in the counterexample
-            tacVarToCVLName[varName]?.let { cvlName ->
-                // because of the condition above, while we may be reassigning to newAssignments[cvlName],
-                // we will be reassigning the same model
-                cvlName to model
-            }
-        }.toMap()
-    }
 
     companion object {
         val Empty = SMTCounterexampleModel(mapOf())

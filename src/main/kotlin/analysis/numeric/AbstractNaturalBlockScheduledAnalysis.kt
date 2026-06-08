@@ -31,11 +31,8 @@ import analysis.worklist.IWorklistScheduler
 import analysis.worklist.StatefulWorklistIteration
 import analysis.worklist.StepResult
 import tac.NBId
-import utils.lazy
-import utils.parallelStream
-import utils.`to?`
+import utils.*
 import vc.data.TACCmd
-import java.util.concurrent.ConcurrentHashMap
 import java.util.stream.Stream
 
 /** A worklist-based interval analysis */
@@ -56,11 +53,8 @@ abstract class AbstractNaturalBlockScheduledAnalysis<W, T: TACCmd, U: LTACCmdGen
     abstract val scheduler: IWorklistScheduler<NBId>
     abstract val initialState: W
 
-    // Only store in/out states at the block level
-    private val inState = mutableMapOf<NBId, W>()
-    private val outState = mutableMapOf<NBId, W>()
-
-    private val inStateCache = ConcurrentHashMap<CmdPointer, W>()
+    private val inState = mutableMapOf<CmdPointer, W>()
+    private val outState = mutableMapOf<CmdPointer, W>()
 
     // Maps loop header |-> loop
     private val loopsByHead by lazy {
@@ -71,72 +65,25 @@ abstract class AbstractNaturalBlockScheduledAnalysis<W, T: TACCmd, U: LTACCmdGen
      * @return the state before executing the command at [ptr].
      *         If [ptr] is not reachable this returns null
      */
-    fun inState(ptr: CmdPointer): W? {
-        var st: W = inState[ptr.block] ?: return null
-        for (cmd in graph.elab(ptr.block).commands) {
-            if (cmd.ptr == ptr) {
-                return st
-            }
-            st = step(cmd, st) ?: return null
-        }
-        throw IllegalArgumentException("No in state for $ptr")
+    fun inState(ptr: CmdPointer): W? = inState[ptr]
+
+    /**
+     * @return the state after executing the command at [ptr].
+     *         If [ptr] is not reachable this returns null
+     */
+    fun outState(ptr: CmdPointer): W? = outState[ptr]
+
+    /**
+     * @return all states before executing each command in the graph
+     */
+    fun parallelStreamStates() : Stream<Pair<CmdPointer, W>> {
+        return inState.entries.parallelStream().map { (ptr, state) -> ptr to state }
     }
 
-    private fun firstCachedPred(ptr: CmdPointer): Pair<CmdPointer, W?> =
-        graph
-            .lcmdSequence(ptr.block, 0, ptr.pos, true)
-            .firstNotNullOfOrNull { it.ptr `to?` inStateCache[it.ptr] } ?: run {
-            val start = ptr.copy(pos = 0)
-            val initState = inState(start)
-            if (initState != null) {
-                inStateCache[start] = initState
-            }
-            start to initState
-        }
-
-    fun cachingInState(ptr: CmdPointer): W? {
-        val (start, cachedState) = firstCachedPred(ptr)
-
-        var st: W = cachedState ?: return null
-
-        for (cmd in graph.iterateBlock(start, ptr.pos)) {
-            st = step(cmd, st) ?: return null
-            inStateCache[cmd.ptr] = st
-        }
-        return st
-    }
-
-    fun parallelStreamStates(): Stream<Pair<CmdPointer, W>> {
-        return inState.keys.parallelStream().flatMap { b ->
-            inStates(b).parallelStream()
-        }
-    }
-
-    private fun inStates(b: NBId): Sequence<Pair<CmdPointer, W>> = sequence {
-        var theState: W? = inState[b]
-        for (c in graph.elab(b).commands) {
-            if (theState == null) {
-                break
-            }
-            yield(c.ptr to theState)
-            theState = step(c, theState)
-        }
-    }
-
-    fun outState(ptr: CmdPointer): W? {
-        var st: W = inState[ptr.block] ?: return null
-        for (cmd in graph.elab(ptr.block).commands) {
-            st = step(cmd, st) ?: return null
-            if (cmd.ptr == ptr) {
-                return st
-            }
-        }
-        throw IllegalArgumentException("No out state for $ptr")
-    }
 
     protected fun runAnalysis() {
         graph.rootBlocks.forEach {
-            inState[it.id] = initialState
+            inState[CmdPointer(it.id, 0)] = initialState
         }
         (object : StatefulWorklistIteration<NBId, Unit, Unit>() {
             override val scheduler: IWorklistScheduler<NBId> =
@@ -150,23 +97,23 @@ abstract class AbstractNaturalBlockScheduledAnalysis<W, T: TACCmd, U: LTACCmdGen
         }).submit(graph.rootBlocks.map { it.id })
     }
 
-    protected open fun stepBlock(inState: W, block: NBId): W? {
+    private fun stepBlock(block: NBId): W? {
         val commands = graph.elab(block).commands
 
-        var state = inState
+        var state = inState[CmdPointer(block, 0)]!!
         for (cmd in commands) {
+            inState[cmd.ptr] = state
             state = step(cmd, state) ?: return null
+            outState[cmd.ptr] = state
         }
 
         return state
     }
 
     private fun iterBlock(block: NBId): Set<NBId> {
-        val state: W = inState[block] ?: return setOf()
         val next = mutableSetOf<NBId>()
 
-        val blockOut = stepBlock(state, block) ?: return next
-        outState[block] = prepareBlockOut(blockOut)
+        val blockOut = stepBlock(block) ?: return next
 
         for ((succ, cond) in graph.pathConditionsOf(block)) {
             val fst = graph.elab(succ).commands.last()
@@ -182,17 +129,18 @@ abstract class AbstractNaturalBlockScheduledAnalysis<W, T: TACCmd, U: LTACCmdGen
                 invariantHeuristic.guessLoopInvariants(graph, enteringLoop, propagated)
             } ?: propagated
 
-            if (succ !in inState) {
-                inState[succ] = nextWithGuessedInvariants
+            val succPtr = CmdPointer(succ, 0)
+            if (succPtr !in inState) {
+                inState[succPtr] = nextWithGuessedInvariants
                 next.add(succ)
             } else {
-                val prevState = inState[succ]!!
+                val prevState = inState[succPtr]!!
                 val isBackJump = loopsByHead[succ]?.any { block in it.body } == true
 
                 val joined = joinOp(prevState, nextWithGuessedInvariants, widen = isBackJump)
 
                 if (joined != prevState) {
-                    inState[succ] = joined
+                    inState[succPtr] = joined
                     next.add(succ)
                 }
             }

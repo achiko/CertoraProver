@@ -1,3 +1,4 @@
+mod rule_add_example;
 mod rule_add_with_function;
 mod rule_add_with_function_at_level2;
 mod rule_array_test2;

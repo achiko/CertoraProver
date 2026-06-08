@@ -19,6 +19,8 @@ package infra
 
 import analysis.LTACCmd
 import bridge.NamedContractIdentifier
+import config.Config
+import config.DestructiveOptimizationsModeEnum
 import datastructures.NonEmptyList
 import instrumentation.transformers.InitialCodeInstrumentation
 import kotlinx.coroutines.runBlocking
@@ -26,18 +28,31 @@ import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.json.*
 import log.RuleTestArtifactKey.TestArtifactKind
 import report.DummyLiveStatsReporter
+import report.ReporterContainer
+import report.TreeViewReporter
 import report.callresolution.CallResolutionTable
 import report.calltrace.CallInstance
 import report.calltrace.CallTrace
 import rules.CompiledRule
 import rules.IsFromCache
+import rules.RuleCheckResult
 import rules.RuleCheckResult.Single.RuleCheckInfo
+import rules.RuleChecker
+import rules.prepareForTwoStageInterpreted
 import scene.*
+import spec.converters.EVMMoveSemantics
+import spec.cvlast.SolidityContract
+import spec.cvlast.SpecType
+import spec.cvlast.typedescriptors.EVMTypeDescriptor.Companion.resetVTable
+import spec.cvlast.typedescriptors.theSemantics
 import spec.rules.CVLSingleRule
+import spec.rules.GroupRule
 import utils.*
 import utils.CollectingResult.Companion.map
 import vc.data.CoreTACProgram
+import vc.data.withDestructiveOptimizations
 import verifier.AbstractTACChecker
+import verifier.IntegrativeChecker.runInitialTransformations
 import verifier.TACVerifier
 import verifier.Verifier
 import java.nio.file.Path
@@ -85,6 +100,7 @@ object CallTraceInfra {
                 this.rule,
                 this.verifierResult,
                 origProWithAssertIdMeta,
+                null,
                 callResolutionTableFactory,
                 isOptimizedRuleFromCache = IsFromCache.DISABLED,
                 isSolverResultFromCache = IsFromCache.DISABLED
@@ -118,6 +134,14 @@ object CallTraceInfra {
             ?: error("Expected to have a single example but got ${examplesData.examples.size}")
     }
 
+    /**
+     * This method is deprecated, rather use [runConfAndGetCounterExampleFullFlow] below.
+     *
+     * The reason is that this method bypasses some initial transformation in the pipeline and
+     * doesn't apply all transformation, we there do not test the flow end-to-end.
+     *
+     * This method only exists for backward compatibility with existing test that use [parametricMethodNames]
+     */
     fun runConfAndGetCounterExample(
         confPath: Path,
         specFilename: Path,
@@ -203,6 +227,7 @@ object CallTraceInfra {
                 rule,
                 verifierResult,
                 origProWithAssertIdMeta,
+                null,
                 callResolutionTableFactory,
                 isOptimizedRuleFromCache = IsFromCache.DISABLED,
                 isSolverResultFromCache = IsFromCache.DISABLED
@@ -220,9 +245,84 @@ object CallTraceInfra {
         parametricMethodNames: List<String> = emptyList(),
         buildOptions: List<String> = emptyList()
     ): CallTrace {
-        val counterExample = runConfAndGetCounterExample(confPath, specFilename, ruleName, primaryContract, parametricMethodNames, buildOptions)
+        val counterExample = runConfAndGetCounterExample(
+            confPath,
+            specFilename,
+            ruleName,
+            primaryContract,
+            parametricMethodNames,
+            buildOptions
+        )
         return counterExample.callTrace ?: error("failed to get call trace, got: $counterExample")
     }
+
+
+    fun runConfAndGetCounterExampleFullFlow(
+        confPath: Path,
+        specFilename: Path,
+        ruleName: String,
+        primaryContract: String,
+        buildOptions: List<String> = emptyList()
+    ): CallTrace {
+        return runConfAndGetCounterExampleFlow(confPath, specFilename, ruleName, primaryContract, buildOptions).callTrace ?: error("failed to get counter trace")
+    }
+
+    fun runConfAndGetCounterExampleFlow(
+        confPath: Path,
+        specFilename: Path,
+        ruleName: String,
+        primaryContract: String,
+        buildOptions: List<String> = emptyList()
+    ): RuleCheckInfo.WithExamplesData.CounterExample {
+        resetVTable()
+        theSemantics = EVMMoveSemantics
+        val cvlText = specFilename.readText()
+
+        val specSource = CVLSpecTextSource(
+            cvlText,
+            NamedContractIdentifier(
+                primaryContract
+            )
+        )
+        return CertoraBuild.inTempDir(CertoraBuildKind.EVMBuild(buildOptions), confPath).useWithBuildDir { build ->
+
+            val certoraBuilderContractSource = build.contractSource
+
+            val pqAndS = specSource.getQuery(
+                certoraBuilderContractSource.instances(),
+                SceneFactory.getCVLScene(certoraBuilderContractSource)
+            ).map { query ->
+                build.getScene(query) to query
+            }
+            val query = pqAndS.force().second as ProverQuery.CVLQuery.Single
+            val scene = pqAndS.force().first
+            val ruleToCheck = query.cvl.rules.filterIsInstance<CVLSingleRule>().firstOrNull {
+                it.ruleIdentifier.root().displayName == ruleName
+            } ?: error("Did not find a rule with name $ruleName")
+            runInitialTransformations(scene, query)
+            val ruleChecker = RuleChecker(
+                scene,
+                contractName = SolidityContract(""),
+                cvl = query.cvl,
+                ReporterContainer(emptyList()),
+                TreeViewReporter("", ""),
+                null
+            )
+
+            val res = runBlocking {
+                ruleChecker.singleRuleCheck(ruleToCheck)
+            }
+
+            fun getResult(res: RuleCheckResult): RuleCheckInfo.WithExamplesData.CounterExample {
+                check(res is RuleCheckResult.Single)
+                return (res.ruleCheckInfo as? RuleCheckInfo.WithExamplesData)?.examples?.first()
+                    ?: error("Expecting to receive SAT and a call trace")
+            }
+            getResult(res)
+        }
+    }
+
+
 
     /**
      * This just thinly wraps [getCounterExampleFromSerialized] look there for details. (tldr: reads a bunch of files on

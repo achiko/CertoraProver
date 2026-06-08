@@ -55,6 +55,12 @@ sealed class DisplayPath : AmbiSerializable, TransformableSymEntityWithRlxSuppor
     abstract val base: DisplayPath?
     abstract fun toDisplayString(formatter: CallTraceValueFormatter, model: CounterexampleModel) : Sarif
     abstract fun toNonIndexedString() : String
+
+    /**
+     * Like [toNonIndexedString], but shows concrete values for constant indices
+     * (e.g., `tokens[2]`) and `_` for variable indices (e.g., `tokens[_]`).
+     */
+    abstract fun toPartiallyIndexedString() : String
     abstract fun instantiateTACSymbols(model: CounterexampleModel, next: InstantiatedDisplayPath? = null): InstantiatedDisplayPath
 
     @KSerializable
@@ -65,6 +71,10 @@ sealed class DisplayPath : AmbiSerializable, TransformableSymEntityWithRlxSuppor
         }
 
         override fun toNonIndexedString(): String {
+            return toString()
+        }
+
+        override fun toPartiallyIndexedString(): String {
             return toString()
         }
 
@@ -91,6 +101,10 @@ sealed class DisplayPath : AmbiSerializable, TransformableSymEntityWithRlxSuppor
 
         override fun toNonIndexedString(): String {
             return "${base.toNonIndexedString()}.$field"
+        }
+
+        override fun toPartiallyIndexedString(): String {
+            return "${base.toPartiallyIndexedString()}.$field"
         }
 
         override fun toString(): String {
@@ -124,6 +138,11 @@ sealed class DisplayPath : AmbiSerializable, TransformableSymEntityWithRlxSuppor
 
         override fun toNonIndexedString(): String {
             return "${base.toNonIndexedString()}[*]"
+        }
+
+        override fun toPartiallyIndexedString(): String {
+            val indexStr = (index as? TACSymbol.Const)?.value?.toString() ?: "_"
+            return "${base.toPartiallyIndexedString()}[$indexStr]"
         }
 
 
@@ -181,6 +200,11 @@ sealed class DisplayPath : AmbiSerializable, TransformableSymEntityWithRlxSuppor
 
         override fun toNonIndexedString(): String {
             return "${base.toNonIndexedString()}[*]"
+        }
+
+        override fun toPartiallyIndexedString(): String {
+            val keyStr = (key as? TACSymbol.Const)?.value?.toString() ?: "_"
+            return "${base.toPartiallyIndexedString()}[$keyStr]"
         }
 
         override fun toString(): String {

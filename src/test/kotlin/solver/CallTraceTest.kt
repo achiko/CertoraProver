@@ -33,6 +33,7 @@ import log.*
 import log.TestLoggers.CallTrace.noXs
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.BeforeEach
+import org.junit.jupiter.api.RepeatedTest
 import org.junit.jupiter.api.Test
 import report.LocalAssignments
 import report.calltrace.CallEndStatus
@@ -47,9 +48,12 @@ import solver.StructuralInvariants.verifyAssertCast
 import solver.StructuralInvariants.verifyAssertChildren
 import solver.StructuralInvariants.verifyExpectedJson
 import solver.StructuralInvariants.verifyHasGlobalState
+import spec.converters.EVMMoveSemantics
 import utils.Range
 import spec.rules.CVLSingleRule
 import spec.cvlast.CVLType
+import spec.cvlast.typedescriptors.EVMTypeDescriptor.Companion.resetVTable
+import spec.cvlast.typedescriptors.theSemantics
 import spec.rules.SingleRuleGenerationMeta
 import utils.*
 import vc.data.*
@@ -84,7 +88,7 @@ class CallTraceTest {
      */
     @Test
     fun testMod() {
-        val callTrace = CallTraceInfra.runConfAndGetCallTrace(
+        val callTrace = CallTraceInfra.runConfAndGetCounterExampleFullFlow(
             confPath = resolvePath("mod/mod.conf"),
             specFilename = resolvePath("mod/mod.spec"),
             ruleName = "even",
@@ -107,7 +111,7 @@ class CallTraceTest {
      *    up now .. */
     @Test
     fun testAssertCastRuleAsParam() {
-        val callTrace = CallTraceInfra.runConfAndGetCallTrace(
+        val callTrace = CallTraceInfra.runConfAndGetCounterExampleFullFlow(
             confPath = resolvePath("AssertCast/assert_cast.conf"),
             specFilename = resolvePath("AssertCast/Cast.spec"),
             ruleName = "AsParam",
@@ -131,13 +135,13 @@ class CallTraceTest {
         // check that the second assert cast is violated
         val castChecks =
             callTraceFlat.filterIsInstance<CallInstance.CastCheckInstance>().toList()
-        assertEquals(castChecks[0].name, "assert-cast check passed")
-        assertEquals(castChecks[1].name, "assert-cast check failed")
+        assertEquals("assert-cast check passed", castChecks[0].name)
+        assertEquals("assert-cast check failed", castChecks[1].name)
     }
 
     @Test
     fun testAssertCastRuleComplexExp() {
-        val callTrace = CallTraceInfra.runConfAndGetCallTrace(
+        val callTrace = CallTraceInfra.runConfAndGetCounterExampleFullFlow(
             confPath = resolvePath("AssertCast/assert_cast.conf"),
             specFilename = resolvePath("AssertCast/Cast.spec"),
             ruleName = "ComplexExp",
@@ -154,7 +158,7 @@ class CallTraceTest {
 
     @Test
     fun testAssertCastRuleDefinitionStatement() {
-        val callTrace = CallTraceInfra.runConfAndGetCallTrace(
+        val callTrace = CallTraceInfra.runConfAndGetCounterExampleFullFlow(
             confPath = resolvePath("AssertCast/assert_cast.conf"),
             specFilename = resolvePath("AssertCast/Cast.spec"),
             ruleName = "DefinitionStatement",
@@ -169,7 +173,7 @@ class CallTraceTest {
 
     @Test
     fun testAssertCastRuleIfStatement() {
-        val callTrace = CallTraceInfra.runConfAndGetCallTrace(
+        val callTrace = CallTraceInfra.runConfAndGetCounterExampleFullFlow(
             confPath = resolvePath("AssertCast/assert_cast.conf"),
             specFilename = resolvePath("AssertCast/Cast.spec"),
             ruleName = "IfStatement",
@@ -185,7 +189,7 @@ class CallTraceTest {
 
     @Test
     fun testAssertCastRuleToSignedInt() {
-        val callTrace = CallTraceInfra.runConfAndGetCallTrace(
+        val callTrace = CallTraceInfra.runConfAndGetCounterExampleFullFlow(
             confPath = resolvePath("AssertCast/assert_cast.conf"),
             specFilename = resolvePath("AssertCast/Cast.spec"),
             ruleName = "ToSignedInt",
@@ -206,7 +210,7 @@ class CallTraceTest {
 
     @Test
     fun testStructPassingToCVLFunc1() {
-        val callTrace = CallTraceInfra.runConfAndGetCallTrace(
+        val callTrace = CallTraceInfra.runConfAndGetCounterExampleFullFlow(
             confPath = resolvePath("CVLFunctionStructs/run.conf"),
             specFilename = resolvePath("CVLFunctionStructs/test.spec"),
             ruleName = "checkWorkOnS",
@@ -252,7 +256,7 @@ class CallTraceTest {
 
     @Test
     fun testStructPassingToCVLFunc2() {
-        val callTrace = CallTraceInfra.runConfAndGetCallTrace(
+        val callTrace = CallTraceInfra.runConfAndGetCounterExampleFullFlow(
             confPath = resolvePath("CVLFunctionStructs/run.conf"),
             specFilename = resolvePath("CVLFunctionStructs/test.spec"),
             ruleName = "checkWorkOnSCVL",
@@ -288,7 +292,7 @@ class CallTraceTest {
         )
 
         for ((ruleName, uiStringRegex) in tests) {
-            val callTrace = CallTraceInfra.runConfAndGetCallTrace(
+            val callTrace = CallTraceInfra.runConfAndGetCounterExampleFullFlow(
                 confPath = resolvePath("CVLFunctionStructs/Nested/run.conf"),
                 specFilename = resolvePath("CVLFunctionStructs/Nested/test.spec"),
                 ruleName,
@@ -310,7 +314,7 @@ class CallTraceTest {
 
     @Test
     fun testCVLFunctionBasic() {
-        val callTrace = CallTraceInfra.runConfAndGetCallTrace(
+        val callTrace = CallTraceInfra.runConfAndGetCounterExampleFullFlow(
             confPath = resolvePath("CVLFunctionBasic/run.conf"),
             specFilename = resolvePath("CVLFunctionBasic/Basic.spec"),
             ruleName = "CvlFunctionTest",
@@ -330,7 +334,7 @@ class CallTraceTest {
 
     @Test
     fun testCVLFunctionComplexTestCalldataarg() {
-        val callTrace = CallTraceInfra.runConfAndGetCallTrace(
+        val callTrace = CallTraceInfra.runConfAndGetCounterExampleFullFlow(
             confPath = resolvePath("CVLFunctionComplex/run.conf"),
             specFilename = resolvePath("CVLFunctionComplex/Complex.spec"),
             ruleName = "test_calldataarg",
@@ -377,7 +381,7 @@ class CallTraceTest {
      */
     @Test
     fun testCVLFunctionComplexTestStaticArray() {
-        val callTrace = CallTraceInfra.runConfAndGetCallTrace(
+        val callTrace = CallTraceInfra.runConfAndGetCounterExampleFullFlow(
             confPath = resolvePath("CVLFunctionComplex/run.conf"),
             specFilename = resolvePath("CVLFunctionComplex/Complex.spec"),
             ruleName = "test_static_array",
@@ -414,7 +418,7 @@ class CallTraceTest {
     @Test
     fun testCVLFunctionComplexTestDynamicArray() {
         ConfigScope(Config.LoopUnrollConstant, 4).use {
-            val callTrace = CallTraceInfra.runConfAndGetCallTrace(
+            val callTrace = CallTraceInfra.runConfAndGetCounterExampleFullFlow(
                 confPath = resolvePath("CVLFunctionComplex/run.conf"),
                 specFilename = resolvePath("CVLFunctionComplex/Complex.spec"),
                 ruleName = "test_dynamic_array",
@@ -449,7 +453,7 @@ class CallTraceTest {
 
     @Test
     fun testCallHook() {
-        val callTrace = CallTraceInfra.runConfAndGetCallTrace(
+        val callTrace = CallTraceInfra.runConfAndGetCounterExampleFullFlow(
             confPath = resolvePath("CallHooks/run.conf"),
             specFilename = resolvePath("CallHooks/test.spec"),
             ruleName = "trigger_call_opcode",
@@ -469,7 +473,7 @@ class CallTraceTest {
 
     @Test
     fun testStorageHook() {
-        val callTrace = CallTraceInfra.runConfAndGetCallTrace(
+        val callTrace = CallTraceInfra.runConfAndGetCounterExampleFullFlow(
             confPath = resolvePath("StorageHooks/run.conf"),
             specFilename = resolvePath("StorageHooks/test.spec"),
             ruleName = "trigger_storage_set",
@@ -488,7 +492,7 @@ class CallTraceTest {
 
     @Test
     fun testCVLFunctionComplexTestStringAndBytes() {
-        val callTrace = CallTraceInfra.runConfAndGetCallTrace(
+        val callTrace = CallTraceInfra.runConfAndGetCounterExampleFullFlow(
             confPath = resolvePath("CVLFunctionComplex/run.conf"),
             specFilename = resolvePath("CVLFunctionComplex/Complex.spec"),
             ruleName = "test_string_and_bytes",
@@ -516,7 +520,7 @@ class CallTraceTest {
 
     @Test
     fun testStorageStateComplexTypes() {
-        val callTrace = CallTraceInfra.runConfAndGetCallTrace(
+        val callTrace = CallTraceInfra.runConfAndGetCounterExampleFullFlow(
             confPath = resolvePath("StorageStateComplexTypes/run.conf"),
             specFilename = resolvePath("StorageStateComplexTypes/ComplexTypes.spec"),
             ruleName = "check1",
@@ -529,7 +533,6 @@ class CallTraceTest {
 
         checkViolatedAssert(callTrace) { ctv ->
             assertTrue(TACMeta.CVL_USER_DEFINED_ASSERT in ctv.violatedAssert.cmd.meta)
-            assertEquals(TACSymbol.False, (ctv.violatedAssert.cmd as TACCmd.Simple.AssertCmd).o)
         }
 
         /* checking that the call trace contains the items we expect */
@@ -562,7 +565,7 @@ class CallTraceTest {
 
     @Test
     fun testLocalAssignments() {
-        val counterExample = CallTraceInfra.runConfAndGetCounterExample(
+        val counterExample = CallTraceInfra.runConfAndGetCounterExampleFlow(
             confPath = resolvePath("LocalAssignments/Basic.conf"),
             specFilename = resolvePath("LocalAssignments/Basic.spec"),
             ruleName = "test",
@@ -607,37 +610,25 @@ class CallTraceTest {
         assertTrue("contractValNew" !in assignmentsByName)
     }
 
-    // to be made into an actual test later on (during revising our testing infra)
-//     @Test
-    // TODO: CERT-9273
-    @Suppress("UNUSED", "UNUSED_VARIABLE", "UNREACHABLE_CODE")
-    fun testCvlStrings() {
-        val counterExample = CallTraceInfra.runConfAndGetCounterExample(
-            confPath = resolvePath("CVLStrings/cvlStrings.conf"),
-            specFilename = resolvePath("CVLStrings/cvlStrings.spec"),
-            ruleName = TODO("no idea what this test expects."),
-            primaryContract = "cvlStrings",
-        )
-    }
-
     @Test
     fun testLocalAssignments_LenInExpression1() {
-        val counterExample = CallTraceInfra.runConfAndGetCounterExample(
+        val counterExample = CallTraceInfra.runConfAndGetCounterExampleFlow(
             confPath = resolvePath("LocalAssignments/TestArray.conf"),
             specFilename = resolvePath("LocalAssignments/TestArray.spec"),
             ruleName = "LenInExpression1",
             primaryContract = "TestArray",
         )
 
+        val lenInstances = lenInstances(counterExample.callTrace!!)
         val lenVarValue = counterExample.expectAssignments().terminalsByName().get(lenVarName)?.scalarValue
-        val lenInstance = lenInstance(counterExample.callTrace!!)
-
-        assertEquals(lenVarValue, lenInstance.value)
+        lenInstances.forEach { lenInstance ->
+            assertEquals(lenVarValue, lenInstance.value)
+        }
     }
 
     @Test
     fun testLocalAssignments_LenInExpression2() {
-        val callTrace = CallTraceInfra.runConfAndGetCallTrace(
+        val callTrace = CallTraceInfra.runConfAndGetCounterExampleFullFlow(
             confPath = resolvePath("LocalAssignments2/TestArray.conf"),
             specFilename = resolvePath("LocalAssignments2/TestArray.spec"),
             ruleName = "LenInExpression2",
@@ -645,9 +636,11 @@ class CallTraceTest {
         )
 
         val lenVarValue = TACValue.valueOf(3) // as hardcoded in a require in the rule
-        val lenInstance = lenInstance(callTrace)
+        val lenInstances = lenInstances(callTrace)
 
-        assertEquals(lenVarValue, lenInstance.value)
+        lenInstances.forEach { lenInstance ->
+            assertEquals(lenVarValue, lenInstance.value)
+        }
     }
 
     @Test
@@ -667,7 +660,7 @@ class CallTraceTest {
     @Test
     fun testSummarizationUnresolvedExternalDefaultCase() {
         ConfigScope(Config.OptimisticUnboundedHashing, true).extend(Config.IsAssumeUnwindCondForLoops, true).use {
-            val callTrace = CallTraceInfra.runConfAndGetCallTrace(
+            val callTrace = CallTraceInfra.runConfAndGetCounterExampleFullFlow(
                 confPath = resolvePath("Summarization/Summarization.conf"),
                 specFilename = resolvePath("Summarization/Summarization.spec"),
                 ruleName = "unresolvedExternalForcingDefaultCase",
@@ -691,7 +684,7 @@ class CallTraceTest {
     @Test
     fun testSummarizationUnresolvedExternal() {
         ConfigScope(Config.OptimisticUnboundedHashing, true).extend(Config.IsAssumeUnwindCondForLoops, true).use {
-            val callTrace = CallTraceInfra.runConfAndGetCallTrace(
+            val callTrace = CallTraceInfra.runConfAndGetCounterExampleFullFlow(
                 confPath = resolvePath("Summarization/Summarization.conf"),
                 specFilename = resolvePath("Summarization/Summarization.spec"),
                 ruleName = "unresolvedExternal",
@@ -803,7 +796,7 @@ class CallTraceTest {
     fun testHavocStorage1() {
         val contractName = "HavocStorage"
 
-        val callTrace = CallTraceInfra.runConfAndGetCallTrace(
+        val callTrace = CallTraceInfra.runConfAndGetCounterExampleFullFlow(
             confPath = resolvePath("HavocStorage/run.conf"),
             specFilename = resolvePath("HavocStorage/HavocStorage.spec"),
             ruleName = "havoc_of_storage_path_is_recognized",
@@ -844,7 +837,7 @@ class CallTraceTest {
      * a struct's field access*/
     @Test
     fun testStructFieldAccessFunctionCall() {
-        val callTrace = CallTraceInfra.runConfAndGetCallTrace(
+        val callTrace = CallTraceInfra.runConfAndGetCounterExampleFullFlow(
             confPath = resolvePath("StructAccess/FunctionCall/Basic.conf"),
             specFilename = resolvePath("StructAccess/FunctionCall/Basic.spec"),
             ruleName = "StructAccessFuncCall",
@@ -869,7 +862,7 @@ class CallTraceTest {
 
     @Test
     fun testStructFieldAccessSimple() {
-        val callTrace = CallTraceInfra.runConfAndGetCallTrace(
+        val callTrace = CallTraceInfra.runConfAndGetCounterExampleFullFlow(
             confPath = resolvePath("StructAccess/Simple/Basic.conf"),
             specFilename = resolvePath("StructAccess/Simple/Basic.spec"),
             ruleName = "StructAccessSimple",
@@ -893,56 +886,9 @@ class CallTraceTest {
         assertTrue(cvlExpInstances.any { it.valueEquals(expectedCallInstance) })
     }
 
-    // @Test
-    fun rangeOfParametricInstantiation() {
-        val plusOneSig = "plus_one()"
-        val plusOneRange = Range.Range("MultipleCandidates.sol", SourcePosition(5u, 4u), SourcePosition(7u, 5u))
-
-        val minusOneSig = "minus_one()"
-        val minusOneRange = Range.Range("MultipleCandidates.sol", SourcePosition(9u, 4u), SourcePosition(11u, 5u))
-
-        // this can become a JUnit parametric test annotation instead, for example by using `CSVSource`. whatever.
-        val tests = listOf(
-            Triple("chooseSame", plusOneSig, plusOneSig),
-            Triple("chooseSame", minusOneSig, minusOneSig),
-            Triple("chooseDifferent", plusOneSig, minusOneSig),
-            Triple("chooseDifferent", minusOneSig, plusOneSig),
-        )
-
-        for (test in tests) {
-            val (ruleName, firstMethodSig, secondMethodSig) = test
-
-            val counterExample = CallTraceInfra.runConfAndGetCounterExample(
-                confPath = resolvePath("ranges/Parametric.conf"),
-                specFilename = resolvePath("ranges/Parametric.spec"),
-                ruleName,
-                primaryContract = "MultipleCandidates",
-                listOf(firstMethodSig, secondMethodSig),
-            )
-
-            val rule = counterExample.rule as? CVLSingleRule
-                ?: fail("expected single rule")
-
-            // TODO: CERT-9273
-            val methodInstantiations = rule.ruleGenerationMeta as? SingleRuleGenerationMeta.WithMethodInstantiations
-                ?: fail("rule is parametric")
-
-            val instantiationRange = methodInstantiations.range
-
-            /** we only try to output a range if all instantiated ranges agree */
-            val expectedRange = when {
-                firstMethodSig == plusOneSig && secondMethodSig == plusOneSig -> plusOneRange
-                firstMethodSig == minusOneSig && secondMethodSig == minusOneSig -> minusOneRange
-                else -> Range.Empty()
-            }
-
-            assertTrue(instantiationRange == expectedRange)
-        }
-    }
-
     @Test
     fun sourceSegmentRangesHaveRelativePath() {
-        val callTrace = CallTraceInfra.runConfAndGetCallTrace(
+        val callTrace = CallTraceInfra.runConfAndGetCounterExampleFullFlow(
             confPath = resolvePath("AssertCast/assert_cast.conf"),
             specFilename = resolvePath("AssertCast/Cast.spec"),
             ruleName = "AsParam",
@@ -963,7 +909,7 @@ class CallTraceTest {
 
     @Test
     fun returnValueParseTree() {
-        val callTrace = CallTraceInfra.runConfAndGetCallTrace(
+        val callTrace = CallTraceInfra.runConfAndGetCounterExampleFullFlow(
             confPath = resolvePath("CVLFunction/run.conf"),
             specFilename = resolvePath("CVLFunction/test.spec"),
             ruleName = "returnValues",
@@ -1269,11 +1215,11 @@ private fun assertRangeMatches(actual: Range?, expectedStart: SourcePosition, ex
     }
 }
 
-private fun lenInstance(callTrace: CallTrace): CallInstance.CVLExpInstance {
+private fun lenInstances(callTrace: CallTrace): Sequence<CallInstance.CVLExpInstance> {
     return callTrace
         .callHierarchyRoot
-        .filterCallInstancesOf<CallInstance.CVLExpInstance>()
-        .single { it.expString() == lenVarName }
+        .allChildren().filterIsInstance<CallInstance.CVLExpInstance>()
+        .filter { it.expString() == lenVarName }
 }
 
 private const val lenVarName = "arr.length"

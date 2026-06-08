@@ -114,19 +114,40 @@ class RuleChecker(
                         DestructiveOptimizationsModeEnum.TWOSTAGE_CHECKED -> twoStageDestructiveOptimizationsCheck(
                             scene,
                             compiledCVLRule
-                        )
+                        ) to null
+                        DestructiveOptimizationsModeEnum.TWOSTAGE_INTERPRETED -> {
+                            /**
+                             * Ideally, we would want to call
+                             * val annotated = compiledCVLRule.tac.prepareForTwoStageCVL()
+                             * to only call [prepareForTwoStageInterpreted] once. Currently,
+                             * we call it below and again in [rules.CompiledRule.check].
+                             *
+                             * Calling it once here leads to cache misses [prepareForTwoStageInterpreted] changes
+                             * the cache key.
+                             */
+                            val annotated = compiledCVLRule.tac
+                            CompiledRule.create(
+                                compiledCVLRule.rule,
+                                annotated.withDestructiveOptimizations(true),
+                                compiledCVLRule.liveStatsReporter
+                            ).check(scene.toIdentifiers()) to annotated
+                                .withDestructiveOptimizations(false)
+                                .prepareForTwoStageInterpreted()
+                        }
 
                         DestructiveOptimizationsModeEnum.ENABLE ->
                             CompiledRule.create(
                                 compiledCVLRule.rule,
                                 compiledCVLRule.tac.withDestructiveOptimizations(true),
                                 compiledCVLRule.liveStatsReporter
-                            ).check(scene.toIdentifiers())
+                            ).check(scene.toIdentifiers()) to null
 
-                        DestructiveOptimizationsModeEnum.DISABLE -> compiledCVLRule.check(scene.toIdentifiers())
+                        DestructiveOptimizationsModeEnum.DISABLE -> compiledCVLRule.check(scene.toIdentifiers()) to null
+                    }.let {
+                        it.first.toCheckResult(scene, compiledCVLRule, unoptimizedTac = it.second)
+                            .getOrElse { RuleCheckResult.Error(compiledCVLRule.rule, it) }
                     }
-                        .toCheckResult(scene, compiledCVLRule)
-                        .getOrElse { RuleCheckResult.Error(compiledCVLRule.rule, it) }
+
                 }
 
                 SDCollectorFactory.collector().recordAny("${TimeSinceStart()}", "finishTime", compiledCVLRule.tac.name)
@@ -824,6 +845,21 @@ class RuleChecker(
                     }
                 )
             }
+        } else if (rule.ruleType is SpecType.Single.BuiltIn) {
+            val result = RuleCheckResult.Single.Basic(
+                rule = rule,
+                result = SolverResult.UNSAT,
+                verifyTime = VerifyTime.None,
+                ruleCheckInfo = RuleCheckResult.Single.RuleCheckInfo.BasicInfo(
+                    details = Result.success("Built-in rule with nothing to check"),
+                    dumpGraphLink = null,
+                    isOptimizedRuleFromCache = IsFromCache.INAPPLICABLE,
+                    isSolverResultFromCache = IsFromCache.INAPPLICABLE,
+                ),
+                ruleAlerts = emptyList(),
+            )
+            treeViewReporter.signalEnd(rule, result)
+            return result
         } else {
             val result = when {
                 rule.ruleType is SpecType.Single.InvariantCheck.GenericPreservedInductionStep -> Result.success(
@@ -838,11 +874,7 @@ class RuleChecker(
                             " and could not find any applicable methods"
                     )
                 )
-                ((rule.ruleType is SpecType.Single.BuiltIn) &&
-                    BuiltInRuleCustomChecker.fromBirType(rule.ruleType as SpecType.Single.BuiltIn).functionSetCanBeEmpty) -> {
-                    // Non-payable functions are filtered out so codeList is empty.
-                    Result.success(RuleAlertReport.Info("No payable functions in the contract"))
-                }
+
 
                 else -> throw IllegalStateException(
                     "Reached the default case in compiledSingleRuleCheck, even though " +

@@ -28,7 +28,6 @@ import utils.*
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonNamingStrategy
 import java.io.Closeable
-import java.util.concurrent.ConcurrentHashMap
 
 private val debugSymbolsLogger = Logger(LoggerTypes.DEBUG_SYMBOLS)
 
@@ -256,7 +255,7 @@ private class LlvmSymbolizer(elfFile: String): Closeable {
         }
     }
 
-    private val cache: ConcurrentHashMap<ULong, List<Range.Range>> = ConcurrentHashMap()
+    private val cache: MutableMap<ULong, List<Range.Range>> = mutableMapOf()
 
     init {
         val cmd = listOf("llvm-symbolizer", "--output-style", "JSON", "--exe", elfFile, "--inlines")
@@ -274,6 +273,7 @@ private class LlvmSymbolizer(elfFile: String): Closeable {
         return reader.readLine()
     }
 
+    @Synchronized
     fun translate(addr: ULong): List<Range.Range> {
         return this.cache.getOrPut(addr) {
             val output = this.fetchOutput(addr)

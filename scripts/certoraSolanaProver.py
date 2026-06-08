@@ -23,9 +23,11 @@ from pathlib import Path
 scripts_dir_path = Path(__file__).parent.resolve()  # containing directory
 sys.path.insert(0, str(scripts_dir_path))
 
-
 import CertoraProver.certoraApp as App
 from CertoraProver.certoraBuildRust import build_rust_project
+from CertoraProver.certoraCloudIO import CloudVerification
+from CertoraProver import splitRules
+from Shared import certoraUtils as Util
 from Shared.proverCommon import (
     build_context,
     collect_and_dump_metadata,
@@ -51,6 +53,7 @@ def run_solana_prover(args: List[str]) -> Optional[CertoraRunResult]:
     2. Run the necessary steps (build/ cloud verification/ local verification)
     """
     context, logging_manager = build_context(args, App.SolanaApp)
+    context.prover_cmd = sys.argv[0]
 
     timings: Dict[str, float] = {}
     exit_code = 0  # The exit code of the script. 0 means success, any other number is an error.
@@ -69,12 +72,30 @@ def run_solana_prover(args: List[str]) -> Optional[CertoraRunResult]:
     if context.build_only:
         return return_value
 
+    if context.split_rules:
+        rule_handler = splitRules.SplitRulesHandler(context)
+        exit_code = rule_handler.generate_runs()
+        cv = CloudVerification(context)
+        cv.print_group_id_url()
+        if exit_code == 0:
+            return_value = CertoraRunResult(
+                cv.get_group_id_url(),
+                False,
+                Util.get_certora_sources_dir(),
+                cv.get_group_id_url(),
+            )
+            return handle_exit(exit_code, return_value)
+        else:
+            raise Util.ExitException("Split rules failed", exit_code)
+
     if context.local:
         additional_commands = []
         if context.solana_summaries:
             additional_commands += ["-solanaSummaries", ",".join(context.solana_summaries)]
         if context.solana_inlining:
             additional_commands += ["-solanaInlining", ",".join(context.solana_inlining)]
+        if context.assert_on_panic is not None:
+            additional_commands += ["-solanaAssertOnPanic", str(context.assert_on_panic).lower()]
         # Run local verification
         exit_code = run_local(context, timings, additional_commands)
     else:

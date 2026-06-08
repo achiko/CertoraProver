@@ -31,10 +31,6 @@ fun removeCFGDiamonds(cfg: MutableSbfCFG) {
             removeCFGDiamonds(block, cfg, removedBlocks)
         }
     }
-
-    // Post-optimization: remove dead definitions
-    // Important for lowering select into assume
-    removeUselessDefinitions(cfg)
 }
 
 private fun removeCFGDiamonds(
@@ -73,51 +69,73 @@ private fun removeCFGDiamonds(
 }
 
 /**
+ * If [operand] is a register whose sole reaching definition before [pos] in [b] is an
+ * assignment, returns that immediate; otherwise returns [operand] unchanged.
+ *
+ * When the definition is in the same block, [operand] equals [dst] (so the select
+ * unconditionally overwrites it), and nothing between the definition and the select reads
+ * the register, the definition position is added to [deadDefPositions] for later removal,
+ * avoiding a whole-CFG liveness pass (via [removeUselessDefinitions]).
+ */
+private fun foldSelectOperand(
+    operand: Value,
+    dst: Value.Reg,
+    b: MutableSbfBasicBlock,
+    pos: Int,
+    deadDefPositions: MutableSet<Int>
+): Value {
+    val reg = operand as? Value.Reg ?: return operand
+    val defLocInst = findDefinitionInterBlock(b, reg, pos)
+    val imm = (defLocInst?.inst as? SbfInstruction.Bin)
+        ?.takeIf { it.op == BinOp.MOV }?.v as? Value.Imm ?: return operand
+    // The select writes dst unconditionally.  If reg == dst the old value of reg can
+    // never be observed after the select, so the definition is dead as long as nothing
+    // between it and the select reads it.
+    if (defLocInst.label == b.getLabel() &&
+        reg == dst &&
+        !isUsed(b, reg, defLocInst.pos, pos)) {
+        deadDefPositions += defLocInst.pos
+    }
+    return imm
+}
+
+/**
  *  Replace true and false values from a select instruction with immediate values if possible.
  *  This transformation does not use intentionally the scalar analysis, so it is limited in scope.
  *
  *  This transformation is important for other transformations such as `simplifyBool`.
+ *
+ *  When a register operand is folded into an immediate, the original assignment that defined
+ *  it may become dead. Specifically, if the folded register equals the select's destination (i.e.,
+ *  the select unconditionally overwrites it), and no instruction between the definition and the
+ *  select reads it, the definition is dead and is removed here.
  */
 private fun simplifySelect(b: MutableSbfBasicBlock) {
+    // Positions (in this block) of assignments that become dead after folding.
+    // Stored in reverse order so that each removal leaves smaller positions intact.
+    val deadDefPositions = sortedSetOf<Int>(reverseOrder())
+
     for (locInst in b.getLocatedInstructions()) {
-        when(val inst = locInst.inst) {
-            is SbfInstruction.Select -> {
-                val pos = locInst.pos
-                val newTrueVal = (inst.trueVal as? Value.Reg)
-                    ?.let { getDefinitionRHS(it, b, pos) as? Value.Imm }
-                    ?: inst.trueVal
+        val inst = locInst.inst as? SbfInstruction.Select ?: continue
+        val pos = locInst.pos
 
-                val newFalseVal = (inst.falseVal as? Value.Reg)
-                    ?.let { getDefinitionRHS(it, b, pos) as? Value.Imm }
-                    ?: inst.falseVal
+        val newTrueVal  = foldSelectOperand(inst.trueVal,  inst.dst, b, pos, deadDefPositions)
+        val newFalseVal = foldSelectOperand(inst.falseVal, inst.dst, b, pos, deadDefPositions)
 
-                if (newTrueVal != inst.trueVal || newFalseVal != inst.falseVal) {
-                    b.replaceInstruction(pos, inst.copy(
-                        trueVal = newTrueVal,
-                        falseVal = newFalseVal
-                    ))
-                }
-            }
-            else -> {}
+        if (newTrueVal != inst.trueVal || newFalseVal != inst.falseVal) {
+            b.replaceInstruction(pos, inst.copy(trueVal = newTrueVal, falseVal = newFalseVal))
         }
     }
-}
 
-/**
- *  Best effort to return the RHS of the definition of [reg] if the definition is an assignment.
- *  The function starts from position [start] in block [b].
- **/
-private fun getDefinitionRHS(reg: Value.Reg, b: SbfBasicBlock, start: Int): Value? {
-    val defLocInst = findDefinitionInterBlock(b, reg, start) ?: return null
-    val defInst = defLocInst.inst as? SbfInstruction.Bin ?: return null
-    if (defInst.op != BinOp.MOV) {
-        return null
+    // replaceInstruction is in-place and does not shift positions.
+    // Removing in descending order keeps lower positions valid for subsequent removals.
+    for (defPos in deadDefPositions) {
+        b.removeAt(defPos)
     }
-    return defInst.v
 }
 
 private fun SbfInstruction.isLoweredAssume(): Boolean =
-    this is SbfInstruction.Assume && this.metaData.getVal(SbfMeta.LOWERED_ASSUME) != null
+    this is SbfInstruction.Assume && this.isLoweredAssume()
 
 private data class Assignment(
     val locInst: LocatedSbfInstruction,

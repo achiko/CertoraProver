@@ -54,7 +54,7 @@ private val logger = Logger(LoggerTypes.SBF_SCALAR_ANALYSIS)
 private fun dbg(msg: () -> Any) { logger.info(msg)}
 
 private class ValueFactory<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>>(
-    val sbfTypeFac: ISbfTypeFactory<TNum, TOffset>): ScalarValueFactory<ScalarValue<TNum, TOffset>> {
+    val sbfTypeFac: ISbfTypeFactory<TNum, TOffset>): IScalarValueFactory<ScalarValue<TNum, TOffset>> {
     override fun mkTop() = ScalarValue(sbfTypeFac.mkTop())
 }
 
@@ -145,6 +145,20 @@ fun<TNum : INumValue<TNum>, TOffset : IOffset<TOffset>> SbfType<TNum, TOffset>.l
     }
 }
 
+class ScalarDomainFactory<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>>
+    : IScalarDomainFactory<TNum, TOffset, ScalarDomain<TNum, TOffset>> {
+    override fun mkTop(fac: ISbfTypeFactory<TNum, TOffset>, globalState: GlobalState) =
+        ScalarDomain.makeTop(fac, globalState)
+    override fun mkBottom(fac: ISbfTypeFactory<TNum, TOffset>, globalState: GlobalState) =
+        ScalarDomain.makeBottom(fac, globalState)
+    override fun init(
+        fac: ISbfTypeFactory<TNum, TOffset>,
+        globalState: GlobalState,
+        addPreconditions: Boolean
+    ) = ScalarDomain(fac, globalState, addPreconditions)
+}
+
+
 class ScalarDomain<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>> private constructor(
     private val base: ScalarBaseDomain<ScalarValue<TNum, TOffset>>,
     // Track which stack bytes may have been written by the program
@@ -167,7 +181,7 @@ class ScalarDomain<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>> private con
 
             val initialOffset = getInitialStackOffset(globalState.globals.elf.useDynamicFrames())
             setRegister(
-                Value.Reg(SbfRegister.R10_STACK_POINTER),
+                Value.Reg(SbfRegister.R10),
                 ScalarValue(sbfTypeFac.toStackPtr(initialOffset))
             )
         }
@@ -265,6 +279,32 @@ class ScalarDomain<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>> private con
         }
     }
 
+    private fun checkOffsetInBoundsWithStaticFrames(
+        baseOffset: Long,
+        newOffset: Long,
+        locInst: LocatedSbfInstruction
+    ) {
+        if (newOffset < baseOffset) {
+            val diff = baseOffset - newOffset
+            val frameSize = SolanaConfig.StackFrameSize.get()
+            if (diff > frameSize) {
+                throw SmashedStack(locInst, (diff - frameSize).toInt())
+            }
+        }
+    }
+
+    /**
+     * Skip validation for promotions, as they normalize stack pointers relative to r10,
+     * which can result in offsets exceeding the current frame size when accessing caller stacks
+    **/
+    private fun skipStackInBoundsValidation(locInst: LocatedSbfInstruction) =
+        listOf(
+            SbfMeta.MEMCPY_PROMOTION,
+            SbfMeta.MEMCPY_ZEXT_PROMOTION,
+            SbfMeta.MEMCPY_TRUNC_PROMOTION,
+            SbfMeta.MATH_PROMOTION
+        ).any { locInst.inst.metaData.getVal(it) != null }
+
     /**
      * Check that stack is not being smashed after pointer arithmetic [locInst]
      * @param [oldType] is the type of destination before executing the instruction.
@@ -279,32 +319,15 @@ class ScalarDomain<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>> private con
             return
         }
 
-        val inst = locInst.inst
-        check(inst is SbfInstruction.Bin)
-
-        val isMemcpyPromotion = listOf(
-            SbfMeta.MEMCPY_PROMOTION,
-            SbfMeta.MEMCPY_ZEXT_PROMOTION,
-            SbfMeta.MEMCPY_TRUNC_PROMOTION
-        ).any { locInst.inst.metaData.getVal(it) != null }
-
-        // Skip validation for memcpy promotions, as they normalize stack pointers relative to r10,
-        // which can result in offsets exceeding the current frame size when accessing caller stacks
-        if (isMemcpyPromotion) {
+        if (skipStackInBoundsValidation(locInst)) {
             return
         }
 
+        val inst = locInst.inst
+        check(inst is SbfInstruction.Bin)
         val oldOffset = (oldType as? SbfType.PointerType.Stack<TNum, TOffset>)?.offset?.toLongOrNull() ?: return
         val newOffset = (newType as? SbfType.PointerType.Stack<TNum, TOffset>)?.offset?.toLongOrNull() ?: return
-        val isDecreasing = newOffset < oldOffset
-        if (isDecreasing) {
-            val diff = oldOffset - newOffset
-            val frameSize = SolanaConfig.StackFrameSize.get()
-            if (diff > frameSize) {
-                val extraSpace = diff - frameSize
-                throw SmashedStack(locInst, extraSpace.toInt())
-            }
-        }
+        checkOffsetInBoundsWithStaticFrames(oldOffset, newOffset, locInst)
     }
 
     /**
@@ -316,20 +339,14 @@ class ScalarDomain<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>> private con
             return
         }
 
+        if (skipStackInBoundsValidation(locInst)) {
+            return
+        }
+
         val inst = locInst.inst
         check(inst is SbfInstruction.Mem)
-
         val baseOffset = (baseType as? SbfType.PointerType.Stack<TNum, TOffset>)?.offset?.toLongOrNull() ?: return
-        val derefOffset = baseOffset + inst.access.offset
-        val isDecreasing = derefOffset < baseOffset
-        if (isDecreasing) {
-            val diff = baseOffset - derefOffset
-            val frameSize = SolanaConfig.StackFrameSize.get()
-            if (diff > frameSize) {
-                val extraSpace = diff - frameSize
-                throw SmashedStack(locInst, extraSpace.toInt())
-            }
-        }
+        checkOffsetInBoundsWithStaticFrames(baseOffset, baseOffset + inst.access.offset, locInst)
     }
 
 
@@ -386,7 +403,8 @@ class ScalarDomain<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>> private con
                 // modular arithmetic
                 setRegister(stmt.dst, ScalarValue(sbfTypeFac.anyNum()))
             }
-            UnOp.BE16, UnOp.BE32, UnOp.BE64, UnOp.LE16, UnOp.LE32, UnOp.LE64 -> {
+            UnOp.BE16, UnOp.BE32, UnOp.BE64,
+            UnOp.LE16, UnOp.LE32, UnOp.LE64 -> {
                 analyzeByteSwapInst(stmt.dst)
             }
         }
@@ -427,11 +445,13 @@ class ScalarDomain<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>> private con
                     else -> types
                 }
             }
+            // top xor top ~> num xor num
             // top << top ~> num << num
             // top >> top ~> num >> num
             // top / top  ~> num / num
             // top % top  ~> num % num
             // top * top  ~> num * num
+            BinOp.XOR,
             BinOp.ARSH,
             BinOp.LSH,
             BinOp.RSH,
@@ -710,20 +730,22 @@ class ScalarDomain<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>> private con
 
     /**
      *  Transfer function for `__CVT_restore_scratch_registers`
-     *  Invariant ensured by CFG construction: r10 has been decremented already
      **/
     private fun restoreScratchRegisters() {
-        val stackPtr = Value.Reg(SbfRegister.R10_STACK_POINTER)
-        val topStack = (getRegister(stackPtr).type() as? SbfType.PointerType.Stack)?.offset?.toLongOrNull()
-        check(topStack != null){ "r10 should point to a statically known stack offset"}
+        base.restoreScratchRegisters()
 
+        val newTopStack = checkNotNull(
+            (getRegister(Value.Reg(SbfRegister.R10)).type() as? SbfType.PointerType.Stack)
+                ?.offset?.toLongOrNull()
+        )
         val useDynFrames= globalState.globals.elf.useDynamicFrames()
 
+        base.removeDeadStackFields(newTopStack, useDynFrames)
+
         mayInitStack  = mayInitStack.intervals
-            .filter { i -> ScalarBaseDomain.isDeadOffset(i.l, topStack, useDynFrames) }
+            .filter { i -> ScalarBaseDomain.isDeadOffset(i.l, newTopStack, useDynFrames) }
             .fold(mayInitStack) { acc, i -> acc.remove(i) }
 
-        base.restoreScratchRegisters(topStack, useDynFrames)
     }
 
     /** Extracts known constant length from a register, or throws a detailed error. */
@@ -773,10 +795,10 @@ class ScalarDomain<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>> private con
      **/
     private fun analyzeMemcpy(locInst: LocatedSbfInstruction)  {
 
-        val r0 = Value.Reg(SbfRegister.R0_RETURN_VALUE)
-        val dstReg = Value.Reg(SbfRegister.R1_ARG) // dst
-        val srcReg = Value.Reg(SbfRegister.R2_ARG) // src
-        val lenReg = Value.Reg(SbfRegister.R3_ARG) // len
+        val r0 = Value.Reg(SbfRegister.R0)
+        val dstReg = Value.Reg(SbfRegister.R1) // dst
+        val srcReg = Value.Reg(SbfRegister.R2) // src
+        val lenReg = Value.Reg(SbfRegister.R3) // len
 
         if (locInst.inst.writeRegister.contains(r0)) {
             forget(r0)
@@ -838,7 +860,12 @@ class ScalarDomain<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>> private con
             }
             else -> {
                 // memcpy from heap/input/global to stack
-                // We don't mark the destination as may-initialized
+
+                // We need to mark conservatively destination as may-initialized.
+                // Apart from being unsound, scalar and pointer analysis can disagree.
+                dstOffsets.forEach { offset ->
+                    markAsMayInit(locInst, offset, len)
+                }
 
                 // We are conservative and remove any overlapping entry at the destination
                 removeDstSlices(dstOffsets, len, onlyPartial = false)
@@ -855,9 +882,9 @@ class ScalarDomain<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>> private con
      * Note that the analysis of `memmove` is a rough over-approximation.
      **/
     private fun analyzeMemsetOrMemmove(locInst: LocatedSbfInstruction) {
-        val r0 = Value.Reg(SbfRegister.R0_RETURN_VALUE)
-        val dstReg = Value.Reg(SbfRegister.R1_ARG) // dst
-        val lenReg = Value.Reg(SbfRegister.R3_ARG) // len
+        val r0 = Value.Reg(SbfRegister.R0)
+        val dstReg = Value.Reg(SbfRegister.R1) // dst
+        val lenReg = Value.Reg(SbfRegister.R3) // len
 
         if (locInst.inst.writeRegister.contains(r0)) {
             forget(r0)
@@ -909,10 +936,10 @@ class ScalarDomain<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>> private con
         transformValue: (ScalarValue<TNum, TOffset>, Long) -> ScalarValue<TNum, TOffset>
     ) {
 
-        val r0 = Value.Reg(SbfRegister.R0_RETURN_VALUE)
-        val dstReg = Value.Reg(SbfRegister.R1_ARG) // dst
-        val srcReg = Value.Reg(SbfRegister.R2_ARG) // src
-        val iReg = Value.Reg(SbfRegister.R3_ARG)   // i
+        val r0 = Value.Reg(SbfRegister.R0)
+        val dstReg = Value.Reg(SbfRegister.R1) // dst
+        val srcReg = Value.Reg(SbfRegister.R2) // src
+        val iReg = Value.Reg(SbfRegister.R3)   // i
 
         if (locInst.inst.writeRegister.contains(r0)) {
             forget(r0)
@@ -973,22 +1000,22 @@ class ScalarDomain<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>> private con
                 SolanaFunction.SOL_MEMCMP, SolanaFunction.SOL_INVOKE_SIGNED_C, SolanaFunction.SOL_INVOKE_SIGNED_RUST,
                 SolanaFunction.SOL_CURVE_GROUP_OP, SolanaFunction.SOL_CURVE_VALIDATE_POINT,
                 SolanaFunction.SOL_GET_STACK_HEIGHT ->
-                    setRegister(Value.Reg(SbfRegister.R0_RETURN_VALUE), ScalarValue(sbfTypeFac.anyNum()))
+                    setRegister(Value.Reg(SbfRegister.R0), ScalarValue(sbfTypeFac.anyNum()))
                 SolanaFunction.SOL_GET_CLOCK_SYSVAR, SolanaFunction.SOL_GET_RENT_SYSVAR ->
                     summarizeCall(locInst)
                 SolanaFunction.SOL_SET_CLOCK_SYSVAR ->
-                    forget(Value.Reg(SbfRegister.R0_RETURN_VALUE))
+                    forget(Value.Reg(SbfRegister.R0))
                 SolanaFunction.SOL_MEMCPY -> analyzeMemcpy(locInst)
                 SolanaFunction.SOL_MEMCPY_ZEXT -> analyzeMemcpyZext(locInst)
                 SolanaFunction.SOL_MEMCPY_TRUNC -> analyzeMemcpyTrunc(locInst)
                 SolanaFunction.SOL_MEMMOVE,
                 SolanaFunction.SOL_MEMSET -> analyzeMemsetOrMemmove(locInst)
-                else -> forget(Value.Reg(SbfRegister.R0_RETURN_VALUE))
+                else -> forget(Value.Reg(SbfRegister.R0))
             }
         } else {
             if (stmt.isAllocFn() && globalState.memSummaries.getSummary(stmt.name) == null) {
                 /// This is only used for pretty-printing
-                setRegister(Value.Reg(SbfRegister.R0_RETURN_VALUE), ScalarValue(sbfTypeFac.anyHeapPtr()))
+                setRegister(Value.Reg(SbfRegister.R0), ScalarValue(sbfTypeFac.anyHeapPtr()))
             } else {
                 /** CVT call **/
                 val cvtFunction = CVTFunction.from(stmt.name)
@@ -997,37 +1024,39 @@ class ScalarDomain<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>> private con
                         is CVTFunction.Core -> {
                             when (cvtFunction.value) {
                                 CVTCore.ASSUME -> {
-                                    analyzeAssume(Condition(CondOp.NE, Value.Reg(SbfRegister.R1_ARG), Value.Imm(0UL)))
+                                    analyzeAssume(Condition(CondOp.NE, Value.Reg(SbfRegister.R1), Value.Imm(0UL)))
                                 }
                                 CVTCore.ASSERT -> {
                                     // At this point, we don't check.
                                     // So if assert doesn't fail than we can assume that r1 !=0
-                                    analyzeAssume(Condition(CondOp.NE, Value.Reg(SbfRegister.R1_ARG), Value.Imm(0UL)))
+                                    analyzeAssume(Condition(CondOp.NE, Value.Reg(SbfRegister.R1), Value.Imm(0UL)))
                                 }
                                 CVTCore.SATISFY, CVTCore.SANITY -> {}
                                 CVTCore.SAVE_SCRATCH_REGISTERS -> saveScratchRegisters()
                                 CVTCore.RESTORE_SCRATCH_REGISTERS -> restoreScratchRegisters()
-                                CVTCore.MASK_64, CVTCore.NONDET_ACCOUNT_INFO -> {
+                                CVTCore.MASK_64,
+                                CVTCore.IS_ACCOUNT_WRITTEN,
+                                CVTCore.NONDET_ACCOUNT_INFO -> {
                                     summarizeCall(locInst)
                                 }
                                 CVTCore.NONDET_SOLANA_ACCOUNT_SPACE -> {
                                     /// This is only used for pretty-printing
                                     setRegister(
-                                        Value.Reg(SbfRegister.R0_RETURN_VALUE),
+                                        Value.Reg(SbfRegister.R0),
                                         ScalarValue(sbfTypeFac.anyInputPtr())
                                     )
                                 }
                                 CVTCore.ALLOC_SLICE -> {
                                     /// This is only used for pretty-printing
                                     /// That's why we return top in some cases rather than reporting an error
-                                    val returnedVal = when (getRegister(Value.Reg(SbfRegister.R1_ARG)).type()) {
+                                    val returnedVal = when (getRegister(Value.Reg(SbfRegister.R1)).type()) {
                                         is SbfType.PointerType.Heap -> sbfTypeFac.anyHeapPtr()
                                         is SbfType.PointerType.Input -> sbfTypeFac.anyInputPtr()
                                         is SbfType.PointerType.Global -> sbfTypeFac.anyGlobalPtr(null)
                                         is SbfType.PointerType.Stack -> sbfTypeFac.anyStackPtr()
                                         else -> sbfTypeFac.mkTop()
                                     }
-                                    setRegister(Value.Reg(SbfRegister.R0_RETURN_VALUE), ScalarValue(returnedVal))
+                                    setRegister(Value.Reg(SbfRegister.R0), ScalarValue(returnedVal))
                                 }
                             }
                         }
@@ -1065,11 +1094,11 @@ class ScalarDomain<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>> private con
             }
 
             override fun noSummaryFound(locInst: LocatedSbfInstruction) {
-                forget(Value.Reg(SbfRegister.R0_RETURN_VALUE))
+                forget(Value.Reg(SbfRegister.R0))
             }
 
             override fun processReturnArgument(locInst: LocatedSbfInstruction, type: MemSummaryArgumentType) {
-                setRegister(Value.Reg(SbfRegister.R0_RETURN_VALUE), getScalarValue(type))
+                setRegister(Value.Reg(SbfRegister.R0), getScalarValue(type))
             }
 
             override fun processArgument(locInst: LocatedSbfInstruction,
@@ -1353,16 +1382,226 @@ class ScalarDomain<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>> private con
         return scalarVal
     }
 
-    /**
-     *  Return the abstract value of the base register if it will be killed by the lhs of a load instruction.
-     *  Otherwise, it returns null. This is used by the Memory Domain.
-     **/
+    private fun analyzeLoad(
+        locInst: LocatedSbfInstruction,
+        baseScalarVal: ScalarValue<TNum, TOffset>,
+        offset: Short,
+        width: Byte,
+        lhs: Value.Reg
+    ) {
+        val inst = locInst.inst
+        check(inst is SbfInstruction.Mem && inst.isLoad)
+
+        val baseType = baseScalarVal.type()
+        checkStackInBounds(baseType, locInst)
+        val loadedAsNumForPTA = inst.metaData.getVal(SbfMeta.LOADED_AS_NUM_FOR_PTA) != null
+        when (baseType) {
+            is SbfType.Bottom -> {}
+            is SbfType.Top -> forgetOrNum(lhs, loadedAsNumForPTA)
+            is SbfType.NumType -> {
+                // Before GlobalInferenceAnalysis is run, it's totally possible to de-reference
+                // an absolute address that it's actually a global variable, but we don't know yet.
+                forgetOrNum(lhs, loadedAsNumForPTA)
+            }
+            is SbfType.PointerType -> {
+                when (baseType) {
+                    is SbfType.PointerType.Stack -> {
+                        // We try to be precise when load from stack
+                        val stackTOffsets = baseType.offset.add(offset.toLong())
+                        check(!stackTOffsets.isBottom())
+                        if (stackTOffsets.isTop()) {
+                            forgetOrNum(lhs, loadedAsNumForPTA)
+                        } else {
+                            val stackOffsets = stackTOffsets.toLongList()
+                            setRegister(lhs,
+                                stackOffsets.fold(ScalarValue(sbfTypeFac.mkBottom())) { acc, stackOffset ->
+                                    val loadedAbsVal = base.getStackSingletonOrNull(ByteRange(stackOffset, width))
+                                    when {
+                                        loadedAbsVal != null -> acc.join(loadedAbsVal.zext(width.toLong()))
+                                        loadedAsNumForPTA -> acc.join(ScalarValue(sbfTypeFac.anyNum()))
+                                        else -> {
+                                            val interval = FiniteInterval.mkInterval(stackOffset, width.toLong())
+                                            if (mayInitStack.intersects(interval)) {
+                                                ScalarValue(SbfType.top())
+                                            } else {
+                                                // Under the assumption of memory safety, if we read from
+                                                // uninitialized stack then we can assume that the loaded value
+                                                // cannot be a stack pointer.
+                                                ScalarValue(SbfType.nonStack())
+                                            }
+                                        }
+                                    }
+                                }
+                            )
+                        }
+                    }
+                    is SbfType.PointerType.Global,
+                    is SbfType.PointerType.Heap,
+                    is SbfType.PointerType.Input -> {
+                        // Under the (checked) assumption that stack pointers do not escape the stack:
+                        // if we read from heap or input then the loaded value cannot a stack pointer
+                        setRegister(lhs,
+                            ScalarValue( if (loadedAsNumForPTA) {
+                                sbfTypeFac.anyNum()
+                            } else {
+                                SbfType.nonStack()
+                            })
+                        )
+
+                        // Refine if reading from a read-only global variable
+                        if (baseType is SbfType.PointerType.Global) {
+                            val globals = globalState.globals
+                            baseType.global?.let { gv ->
+                                val derefAddr = gv.address + offset.toLong()
+                                if (globals.elf.isReadOnlyGlobalVariable(derefAddr)) {
+                                    globals.elf.getAsConstantNum(derefAddr, width.toLong())?.let {
+                                        setRegister(lhs, ScalarValue(sbfTypeFac.toNum(it)))
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            is SbfType.NonStack -> {
+                setRegister(lhs,
+                    ScalarValue( if (loadedAsNumForPTA) {
+                        sbfTypeFac.anyNum()
+                    } else {
+                        SbfType.nonStack()
+                    })
+                )
+            }
+        }
+    }
+
+    private fun analyzeStore(
+        locInst: LocatedSbfInstruction,
+        baseReg: Value.Reg,
+        baseScalarVal: ScalarValue<TNum, TOffset>,
+        offset: Short,
+        width: Byte,
+        value: Value
+    ) {
+        val inst = locInst.inst
+        check(inst is SbfInstruction.Mem && !inst.isLoad)
+
+        val baseType = baseScalarVal.type()
+        checkStackInBounds(baseType, locInst)
+        when (baseType) {
+            is SbfType.Bottom -> {}
+            is SbfType.Top -> {
+                logger.info { "Top store -- ${locInst.inst}" }
+                if (!SolanaConfig.optimisticScalarAnalysis()) {
+                    throw UnknownPointerDerefError(
+                        DevErrorInfo(
+                            locInst,
+                            PtrExprErrReg(baseReg),
+                            "ScalarDomain: $inst to \"top\" pointer"
+                        )
+                    )
+                }
+
+                // do nothing: we **optimistically** assume that this store cannot overwrite stack locations
+                // that will be later read
+            }
+            is SbfType.NumType -> {
+                // Before GlobalInferenceAnalysis is run, it's totally possible to de-reference
+                // an absolute address that it's actually a global variable, but we don't know yet.
+                //
+                // For stores, we need to make the assumption (if optimisticScalarAnalysis enabled)
+                // that the store cannot modify any live stack location.
+                //
+                // After GlobalInferenceAnalysis is run, we shouldn't be here anymore.
+                //
+                if (baseType.value.isTop()) {
+                    if (!SolanaConfig.optimisticScalarAnalysis()) {
+                        throw DerefOfAbsoluteAddressError(
+                            DevErrorInfo(
+                                locInst,
+                                PtrExprErrReg(baseReg),
+                                "ScalarDomain: memory access using an absolute address that is statically unknown at $inst"
+                            )
+                        )
+                    }
+
+                    // do nothing: we **optimistically** assume that this store cannot overwrite stack locations
+                    // that will be later read
+                } else {
+                    val absAddresses = baseType.value.toLongList()
+                    if (absAddresses.any { a -> a in SBF_STACK_START until SBF_HEAP_START }) {
+                        throw DerefOfAbsoluteAddressError(
+                            DevErrorInfo(
+                                locInst,
+                                PtrExprErrReg(baseReg),
+                                "ScalarDomain: unsupported stack access using absolute address $absAddresses at $inst"
+                            )
+                        )
+                    }
+
+                    // do nothing: we know statically all possible absolute addresses, and they do not belong to the stack.
+                    // Thus, we can safely ignore this store.
+                }
+            }
+            is SbfType.PointerType -> {
+                when (baseType) {
+                    is SbfType.PointerType.Stack -> {
+                        // We try to be precise when store to stack
+                        val stackTOffsets = baseType.offset.add(offset.toLong())
+                        check(!stackTOffsets.isBottom())
+
+                        if (stackTOffsets.isTop()) {
+                            throw UnknownStackPointerError(
+                                DevErrorInfo(
+                                    locInst,
+                                    PtrExprErrReg(baseReg),
+                                    "ScalarDomain: $inst to stack but \"top\" offset"
+                                )
+                            )
+                        }
+
+                        val stackOffsets = stackTOffsets.toLongList()
+                        if (stackOffsets.size == 1) {
+                            // Strong update:
+                            // 1. Remove first **all** overlapping entries
+                            // 2. Add a new entry
+                            val stackOffset = stackOffsets.single()
+                            val slice = ByteRange(stackOffset, width)
+
+                            // onlyPartial=false means that any overlapping entry is killed
+                            base.removeStackSliceIf(slice.offset, slice.width.toLong(), onlyPartial = false)
+                            markAsMayInit(locInst, slice.offset, slice.width.toLong())
+                            base.updateStack(slice, getValue(value), isWeak = false)
+                        } else {
+                            // Weak update:
+                            // for each possible stack offset
+                            //    1. Remove first **partial** overlapping entries
+                            //    2. join old value with new value
+                            stackOffsets.forEach {
+                                val slice = ByteRange(it, width)
+                                // onlyPartial=true + isWeak=true means that
+                                // if slice is already in `stack` then its value is not removed and
+                                // `stack.put` will do a weak update with `value`.
+                                // Any other overlapping entry will be removed by `killOffsets`
+                                base.removeStackSliceIf(slice.offset, slice.width.toLong(), onlyPartial = true)
+                                markAsMayInit(locInst, slice.offset, slice.width.toLong())
+                                base.updateStack(slice, getValue(value), isWeak = true)
+                            }
+                        }
+                    }
+                    is SbfType.PointerType.Global,
+                    is SbfType.PointerType.Heap,
+                    is SbfType.PointerType.Input ->  { /* do (safely) nothing */ }
+                }
+            }
+            is SbfType.NonStack -> { /* do (safely) nothing */ }
+        }
+    }
+
     private fun analyzeMem(locInst: LocatedSbfInstruction) {
         check(!isBottom()) {"analyzeMem cannot be called on bottom"}
         val stmt = locInst.inst
-        check(stmt is SbfInstruction.Mem) {"analyzeMem expect a memory instruction instead of $stmt"}
-
-        val globals = globalState.globals
+        check(stmt is SbfInstruction.Mem)
 
         val baseReg = stmt.access.base
         val offset = stmt.access.offset
@@ -1374,205 +1613,14 @@ class ScalarDomain<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>> private con
         if (baseScalarVal.isBottom()) {
             setToBottom()
             return
-        } else {
-            // `baseScalarVal` can be different from `getRegister(baseReg)` if `getRegisterWithNumAsPtrCast`
-            //  performs some cast
-            setRegister(baseReg, baseScalarVal)
         }
+        setRegister(baseReg, baseScalarVal)
 
-        val baseType = baseScalarVal.type()
-        checkStackInBounds(baseType, locInst)
-        val loadedAsNumForPTA = stmt.metaData.getVal(SbfMeta.LOADED_AS_NUM_FOR_PTA) != null
-        when (baseType) {
-            is SbfType.Bottom -> {}
-            is SbfType.Top -> {
-                if (isLoad) {
-                    forgetOrNum(value as Value.Reg, loadedAsNumForPTA)
-                } else {
-                    logger.info { "Top store -- ${locInst.inst}" }
-                    if (!SolanaConfig.optimisticScalarAnalysis()) {
-                        throw UnknownPointerDerefError(
-                            DevErrorInfo(
-                                locInst,
-                                PtrExprErrReg(baseReg),
-                                "store: $stmt to unknown pointer"
-                            )
-                        )
-                    } else {
-                        // We optimistically assume that this store cannot overwrite stack locations
-                        // that will be later read
-                    }
-                }
-            }
-            is SbfType.NumType -> {
-                // Before GlobalInferenceAnalysis is run, it's totally possible to de-reference
-                // an absolute address that it's actually a global variable, but we don't know yet.
-                //
-                // For loads, we don't make any assumption and just havoc lhs.
-                // For stores, we need to make the assumption (if optimisticScalarAnalysis enabled)
-                // that the store cannot modify any live stack location.
-                //
-                // After GlobalInferenceAnalysis is run, we shouldn't be here anymore.
-                //
-                if (isLoad) {
-                    forgetOrNum(value as Value.Reg, loadedAsNumForPTA)
-                } else {
-                    if (baseType.value.isTop()) {
-                        if (!SolanaConfig.optimisticScalarAnalysis()) {
-                            throw DerefOfAbsoluteAddressError(
-                                DevErrorInfo(
-                                    locInst,
-                                    PtrExprErrReg(baseReg),
-                                    "Memory access using an absolute address that is statically unknown at $stmt"
-                                )
-                            )
-                        }
-                    } else {
-                        val absAddresses = baseType.value.toLongList()
-                        if (absAddresses.any { a -> a in SBF_STACK_START until SBF_HEAP_START }) {
-                            throw DerefOfAbsoluteAddressError(
-                                DevErrorInfo(
-                                    locInst,
-                                    PtrExprErrReg(baseReg),
-                                    "Stack access using absolute address $absAddresses at $stmt is not supported"
-                                )
-                            )
-                        } else {
-                            // We know statically all possible absolute addresses, and they do not belong to the stack.
-                            // Thus, we can safely ignore this store.
-                        }
-                    }
-                }
-            }
-            is SbfType.PointerType -> {
-                when (baseType) {
-                    is SbfType.PointerType.Stack -> {
-                        // We try to be precise when load/store from/to stack
-                        val stackTOffsets = baseType.offset.add(offset.toLong())
-                        check(!stackTOffsets.isBottom())
-                        if (stackTOffsets.isTop()) {
-                            if (isLoad) {
-                                forgetOrNum(value as Value.Reg, loadedAsNumForPTA)
-                            } else {
-                                throw UnknownStackPointerError(
-                                    DevErrorInfo(
-                                        locInst,
-                                        PtrExprErrReg(baseReg),
-                                        "store: $stmt to unknown stack location"
-                                    )
-                                )
-                            }
-                        } else {
-                            val stackOffsets = stackTOffsets.toLongList()
-                            if (isLoad) {
-                                setRegister(value as Value.Reg,
-                                    stackOffsets.fold(ScalarValue(sbfTypeFac.mkBottom())) { acc, stackOffset ->
-                                        val loadedAbsVal = base.getStackSingletonOrNull(ByteRange(stackOffset, width.toByte()))
 
-                                        when {
-                                            loadedAbsVal != null -> acc.join(loadedAbsVal.zext(width.toLong()))
-                                            loadedAsNumForPTA -> acc.join(ScalarValue(sbfTypeFac.anyNum()))
-                                            else -> {
-                                                val interval = FiniteInterval.mkInterval(stackOffset, width.toLong())
-
-                                                if (mayInitStack.intersects(interval)) {
-                                                    ScalarValue(SbfType.top())
-                                                } else {
-                                                    // Under the assumption of memory safety, if we read from
-                                                    // uninitialized stack then we can assume that the loaded value
-                                                    // cannot be a stack pointer.
-                                                    ScalarValue(SbfType.nonStack())
-                                                }
-                                            }
-                                        }
-                                    })
-                            } else {
-                                if (stackOffsets.size == 1) {
-                                    // Strong update:
-                                    // 1. Remove first **all** overlapping entries
-                                    // 2. Add a new entry
-                                    val stackOffset = stackOffsets.single()
-                                    val slice = ByteRange(stackOffset, width.toByte())
-
-                                    // onlyPartial=false means that any overlapping entry is killed
-                                    base.removeStackSliceIf(slice.offset, slice.width.toLong(), onlyPartial = false)
-                                    markAsMayInit(locInst, slice.offset, slice.width.toLong())
-                                    base.updateStack(slice, getValue(value), isWeak = false)
-                                } else {
-                                    // Weak update:
-                                    // for each possible stack offset
-                                    //    1. Remove first **partial** overlapping entries
-                                    //    2. join old value with new value
-                                    stackOffsets.forEach {
-                                        val slice = ByteRange(it, width.toByte())
-                                        // onlyPartial=true + isWeak=true means that
-                                        // if slice is already in `stack` then its value is not removed and
-                                        // `stack.put` will do a weak update with `value`.
-                                        // Any other overlapping entry will be removed by `killOffsets`
-                                        base.removeStackSliceIf(slice.offset, slice.width.toLong(), onlyPartial = true)
-                                        markAsMayInit(locInst, slice.offset, slice.width.toLong())
-                                        base.updateStack(slice, getValue(value), isWeak = true)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    is SbfType.PointerType.Global -> {
-                        if (isLoad) {
-                            // Under the (checked) assumption that stack pointers do not escape the stack:
-                            // if we read from global variable then the loaded value cannot a stack pointer
-
-                            setRegister(value as Value.Reg,
-                                ScalarValue( if (loadedAsNumForPTA) {
-                                        sbfTypeFac.anyNum()
-                                    } else {
-                                        SbfType.nonStack()
-                                    }
-                                )
-                            )
-
-                            baseType.global?.let { gv ->
-                                val derefAddr = gv.address + offset.toLong()
-                                if (globals.elf.isReadOnlyGlobalVariable(derefAddr)) {
-                                    globals.elf.getAsConstantNum(derefAddr, width.toLong())?.let {
-                                        setRegister(value, ScalarValue(sbfTypeFac.toNum(it)))
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    is SbfType.PointerType.Heap,
-                    is SbfType.PointerType.Input -> {
-                        if (isLoad) {
-                            // Under the (checked) assumption that stack pointers do not escape the stack:
-                            // if we read from heap or input then the loaded value cannot a stack pointer
-                            setRegister(value as Value.Reg,
-                                ScalarValue( if (loadedAsNumForPTA) {
-                                        sbfTypeFac.anyNum()
-                                    } else {
-                                        SbfType.nonStack()
-                                    }
-                                )
-                            )
-                        }
-                    }
-                }
-            }
-            is SbfType.NonStack -> {
-                if (isLoad) {
-                    // Also at this point, we could refine the type of the base as a NonStackPointer
-                    // but this is not part of our type lattice yet
-
-                    setRegister(value as Value.Reg,
-                        ScalarValue( if (loadedAsNumForPTA) {
-                            sbfTypeFac.anyNum()
-                        } else {
-                            SbfType.nonStack()
-                        }
-                        )
-                    )
-                }
-            }
+        if (isLoad) {
+            analyzeLoad(locInst, baseScalarVal, offset, width.toByte(), value as Value.Reg)
+        } else {
+            analyzeStore(locInst, baseReg, baseScalarVal, offset, width.toByte(), value)
         }
     }
 
@@ -1597,11 +1645,18 @@ class ScalarDomain<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>> private con
         }
     }
 
+    override fun mayStackBeInitialized(offset: Long, size: ULong): Boolean {
+        val interval = FiniteInterval.mkInterval(offset, size.toLong())
+        return (mayInitStack.intersects(interval))
+    }
+
     override fun setScalarValue(reg: Value.Reg, newVal: ScalarValue<TNum, TOffset>) {
         if (!isBottom()) {
             setRegister(reg, newVal)
         }
     }
+
+    override fun getTypeFac() = sbfTypeFac
 
     override fun setStackContent(offset: Long, width: Byte, value: ScalarValue<TNum, TOffset>) {
         mayInitStack = mayInitStack.add(FiniteInterval.mkInterval(offset, width.toLong()))
@@ -1647,7 +1702,7 @@ class ScalarDomain<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>> private con
             listener
         )
 
-    override fun toString() = base.toString() + " mayInitStack=$mayInitStack"
+    override fun toString() = base.toString()
 }
 
 

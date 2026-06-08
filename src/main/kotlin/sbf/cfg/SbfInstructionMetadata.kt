@@ -17,6 +17,7 @@
 
 package sbf.cfg
 
+import compiler.SourceSegment
 import utils.*
 import datastructures.stdcollections.*
 import sbf.dwarf.DWARFCfgEdgeLabel
@@ -60,7 +61,8 @@ object SbfMeta {
     val REG_TYPE =  MetaKey<Pair<Value.Reg, SbfRegisterType>>("reg_type")
     // Address of the instruction
     val SBF_ADDRESS = MetaKey<ULong>("sbf_bytecode_address")
-
+    // Tag to be consumed by calltrace function
+    val STICKY_TAG = MetaKey<String>("tag")
     val SBF_DWARF_DEBUG_ANNOTATIONS = MetaKey<List<DWARFCfgEdgeLabel>>("sbf_debug_edge_annotation")
     // The value is true if the loaded register affects the control flow of the program
     val LOADED_AS_NUM_FOR_PTA = MetaKey<Boolean>("loaded_as_number_for_pta")
@@ -72,10 +74,18 @@ object SbfMeta {
     val MOCK_FOR = MetaKey<String>("mock_for")
     // for source line information coming from CVLR.
     val CVLR_RANGE = MetaKey<Range.Range>("cvlr.range")
-
+    // contains source file and range information from debug symbols
+    val SOURCE_SEGMENT = MetaKey<SourceSegment>("src_segment")
+    // the load of 8 bytes does match the bytes written by last store
+    // which was at the same offset but with width N
+    val MISMATCHED_LOAD = MetaKey<Int>("mismatched_load")
+    // a narrow load (width 1/2/4) whose previous store at the same offset was likely
+    // wider (value N is the inferred store width); used to widen the load.
+    val WIDER_STORED_LOAD = MetaKey<Int>("wider_stored_load")
     // These keys have empty strings as values. The values are irrelevant
     val HINT_OPTIMIZED_WIDE_STORE =  MetaKey<Unit>("hint_optimized_wide_store")
     val MEMCPY_PROMOTION = MetaKey<Unit>("promoted_memcpy")
+    val MATH_PROMOTION = MetaKey<Unit>("math_promotion")
     val MEMCPY_ZEXT_PROMOTION = MetaKey<Unit>("promoted_memcpy_zext")
     val MEMCPY_TRUNC_PROMOTION = MetaKey<Unit>("promoted_memcpy_trunc")
     val MEMSET_PROMOTION = MetaKey<Unit>("promoted_memset")
@@ -83,14 +93,13 @@ object SbfMeta {
     val UNHOISTED_LOAD = MetaKey<Unit>("unhoisted_load")
     val UNHOISTED_MEMCPY = MetaKey<Unit>("unhoisted_memcpy")
     val UNHOISTED_MEMCMP = MetaKey<Unit>("unhoisted_memcmp")
-    val UNHOISTED_STACK_POP = MetaKey<Unit>("unhoisted_stack_pop")
     val LOWERED_SELECT = MetaKey<Unit>("lowered_select")
     val REMOVED_MEMMOVE = MetaKey<Unit>("sol_memmove_")
     val LOWERED_ASSUME = MetaKey<Unit>("lowered_assume")
     val LOWERED_OR = MetaKey<Unit>("lowered_or")
     val UNREACHABLE_FROM_COI = MetaKey<Unit>("unreachable_from_coi")
     val SAFE_MATH = MetaKey<Unit>("safe_math")
-
+    val NARROWED_LOAD = MetaKey<Unit>("narrowed_load")
 }
 
 data class MetaKey<T>(val name: String)
@@ -111,12 +120,17 @@ fun toString(metaData: MetaData): String {
             SbfMeta.MEMCPY_TRUNC_PROMOTION,
             SbfMeta.MEMSET_PROMOTION,
             SbfMeta.UNHOISTED_STORE, SbfMeta.UNHOISTED_LOAD,
-            SbfMeta.UNHOISTED_MEMCPY, SbfMeta.UNHOISTED_MEMCMP, SbfMeta.UNHOISTED_STACK_POP,
-            SbfMeta.LOWERED_SELECT, SbfMeta.LOWERED_OR, SbfMeta.LOADED_AS_NUM_FOR_PTA, SbfMeta.REMOVED_MEMMOVE,
-            SbfMeta.SAFE_MATH, SbfMeta.SET_GLOBAL -> {
+            SbfMeta.UNHOISTED_MEMCPY, SbfMeta.UNHOISTED_MEMCMP,
+            SbfMeta.LOWERED_SELECT, SbfMeta.LOWERED_OR, SbfMeta.LOADED_AS_NUM_FOR_PTA,
+            SbfMeta.REMOVED_MEMMOVE,
+            SbfMeta.SAFE_MATH, SbfMeta.SET_GLOBAL, SbfMeta.NARROWED_LOAD,
+            SbfMeta.MATH_PROMOTION -> {
                 strB.append(" /*${k.name}*/")
             }
-            SbfMeta.CALL_ID, SbfMeta.INLINED_FUNCTION_NAME, SbfMeta.INLINED_FUNCTION_SIZE -> {
+            SbfMeta.CALL_ID,
+            SbfMeta.INLINED_FUNCTION_NAME, SbfMeta.INLINED_FUNCTION_SIZE,
+            SbfMeta.MISMATCHED_LOAD,
+            SbfMeta.WIDER_STORED_LOAD -> {
                 strB.append(" /*${k.name}=${v}*/")
             }
             SbfMeta.SBF_ADDRESS -> {
@@ -137,7 +151,7 @@ fun toString(metaData: MetaData): String {
             }
             SbfMeta.SBF_DWARF_DEBUG_ANNOTATIONS -> {
                 metaData.getVal(SbfMeta.SBF_DWARF_DEBUG_ANNOTATIONS)?.let { scopeEnds ->
-                    strB.append(scopeEnds.joinToString("\n"))
+                    strB.append(scopeEnds.filter { it.persist }.joinToString("\n"))
                 }
             }
             SbfMeta.MANGLED_NAME -> {}

@@ -34,7 +34,8 @@ class ForkedContractClass(
         bytecode: DisassembledEVMBytecode?,
         constructorBytecode: DisassembledEVMBytecode?,
         override var storageInfoField: IStorageInfo,
-        override var transientStorageInfoField: IStorageInfo
+        override var transientStorageInfoField: IStorageInfo,
+        override var resolvedLinksField: ResolvedLinks
 ) : MapBackedContractClass(
         instanceId = src.address,
         instanceIdIsStaticAddress = src.is_static_address,
@@ -55,6 +56,7 @@ class ForkedContractClass(
             transientStorageLayout = this.getTransientStorageLayout(),
             storageInfoField = storageInfoField,
             transientStorageInfoField = transientStorageInfoField,
+            resolvedLinksField = resolvedLinksField,
             bytecode = this.bytecode,
             constructorBytecode = this.constructorBytecode
         )

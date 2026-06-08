@@ -45,7 +45,7 @@ object AssumeSafeMathGuarantees {
                                     val valueExp = ops.single()
                                     // If the expression is not a symbol, save it to a temporary variable so we don't
                                     // have to repeat it in the assume.
-                                    val valueSym = valueExp.takeIf { it is TACExpr.Sym }
+                                    val valueSym = (valueExp as? TACExpr.Sym)
                                         ?: TACKeyword.TMP(valueExp.tagAssumeChecked).also {
                                             decls += it
                                             cmds += TACCmd.Simple.AssigningCmd.AssignExpCmd(it, valueExp)
@@ -54,8 +54,13 @@ object AssumeSafeMathGuarantees {
                                     cmds += TACCmd.Simple.AssumeExpCmd(
                                         TXF { (valueSym ge 0) and (valueSym le bif.upperBound) }
                                     )
-                                    // Replace the SafeMathNarrow.Assuming with SafeMathNarrow.Implicit
-                                    TXF { safeMathNarrow(valueSym, bif.returnSort) }
+                                    if (bif.returnSort == valueSym.s.tag) {
+                                        // Remove the SafeMathNarrow
+                                        valueSym
+                                    } else {
+                                        // Replace the SafeMathNarrow.Assuming with SafeMathNarrow.Implicit
+                                        TXF { safeMathNarrow(valueSym, bif.returnSort) }
+                                    }
                                 }
                                 else -> super.transformApply(f, ops, tag)
                             }

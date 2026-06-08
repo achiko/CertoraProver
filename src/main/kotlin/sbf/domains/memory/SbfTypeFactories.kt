@@ -18,6 +18,7 @@
 package sbf.domains
 
 import sbf.disassembler.SbfGlobalVariable
+import datastructures.stdcollections.*
 
 /** Create SbfType instances where TNum=[Constant] and TOffset=[Constant] **/
 class ConstantSbfTypeFactory: ISbfTypeFactory<Constant, Constant> {
@@ -46,6 +47,16 @@ class ConstantSbfTypeFactory: ISbfTypeFactory<Constant, Constant> {
     override fun toGlobalPtr(offset: Long, gv: SbfGlobalVariable?): SbfType.PointerType.Global<Constant, Constant> = SbfType.PointerType.Global(
         Constant(offset), gv)
 
+    override fun toGlobalPtr(offsets: List<Long>, gv: SbfGlobalVariable?): SbfType.PointerType.Global<Constant, Constant> {
+        check(offsets.isNotEmpty())
+        val firstOffset = offsets.first()
+        return if (offsets.all { it == firstOffset }) {
+            SbfType.PointerType.Global(Constant(firstOffset), gv)
+        } else {
+            anyGlobalPtr(gv)
+        }
+    }
+
     override fun anyNum(): SbfType.NumType<Constant, Constant> = SbfType.NumType(Constant.makeTop())
     override fun anyStackPtr(): SbfType.PointerType.Stack<Constant, Constant> = SbfType.PointerType.Stack(Constant.makeTop())
     override fun anyHeapPtr(): SbfType.PointerType.Heap<Constant, Constant> = SbfType.PointerType.Heap(Constant.makeTop())
@@ -69,6 +80,10 @@ class ConstantSetSbfTypeFactory(private val maxNumDisjuncts: ULong): ISbfTypeFac
     override fun toHeapPtr(offset: Long) = SbfType.PointerType.Heap<ConstantSet, ConstantSet>(ConstantSet(offset, maxNumDisjuncts))
     override fun toInputPtr(offset: Long) = SbfType.PointerType.Input<ConstantSet, ConstantSet>(ConstantSet(offset, maxNumDisjuncts))
     override fun toGlobalPtr(offset: Long, gv: SbfGlobalVariable?) = SbfType.PointerType.Global<ConstantSet, ConstantSet>(ConstantSet(offset, maxNumDisjuncts), gv)
+    override fun toGlobalPtr(offsets: List<Long>, gv: SbfGlobalVariable?): SbfType.PointerType.Global<ConstantSet, ConstantSet> {
+        check(offsets.isNotEmpty())
+        return SbfType.PointerType.Global(ConstantSet(offsets.map{ Constant(it) }.toSet(), maxNumDisjuncts), gv)
+    }
 
     override fun anyNum() = SbfType.NumType<ConstantSet, ConstantSet>(ConstantSet.mkTop(maxNumDisjuncts))
     override fun anyStackPtr() = SbfType.PointerType.Stack<ConstantSet, ConstantSet>(ConstantSet.mkTop(maxNumDisjuncts))

@@ -27,6 +27,8 @@ import spec.cvlast.typedescriptors.*
 import utils.CollectingResult
 import utils.CollectingResult.Companion.asError
 import utils.CollectingResult.Companion.bind
+import utils.CollectingResult.Companion.bindEither
+import utils.CollectingResult.Companion.flatten
 import utils.CollectingResult.Companion.lift
 import utils.CollectingResult.Companion.map
 import utils.CollectingResult.Companion.ok
@@ -70,10 +72,60 @@ class CVLHookTypeChecker(
                     hook.pattern.lift()
                 }
             }
+
+            is CVLHookPattern.Event -> {
+                typeCheckEventPattern(hook, hook.pattern)
+            }
         }
 
         val block = CVLCmdTypeChecker(symbolTable).typeCheckCmds(hook.block)
         return block.bind(hookPattern) { blk, pattern -> hook.copy(block = blk, pattern = pattern).lift() }
+    }
+
+    private fun typeCheckEventPattern(
+        hook: CVLHook,
+        patt: CVLHookPattern.Event
+    ): CollectingResult<CVLHookPattern, CVLError> {
+        val indexedParamCount = patt.eventParams.count {
+            it.indexed
+        }
+        if(indexedParamCount > 3) {
+            val indexedParams = patt.eventParams.filter { it.indexed }.joinToString(", ") {
+                it.param.name ?: "(unnamed)"
+            }
+            return EventHookError(
+                location = hook.range,
+                message = "Too many indexed parameters: $indexedParams; at most 3 are allowed"
+            ).asError()
+        }
+        val typeCheckContactTarget = patt.contractName?.let { explicitScope ->
+            symbolTable.getContractScope(contractName = explicitScope)?.let { _ ->
+                ok
+            } ?: EventHookError(
+                location = hook.range,
+                message = "Emitter contract ${explicitScope.name} for event ${patt.eventName} is not in the scene. Did you misspell the contract name?"
+            ).asError()
+        } ?: ok
+        return patt.eventParams.map { eParam ->
+            val conv = if(eParam.indexed) {
+                eParam.param.vmType.getPureTypeToConvertTo(
+                    context = FromVMContext.HookValue
+                )
+            } else {
+                eParam.param.vmType.getPureTypeToConvertTo(FromVMContext.EventHookBinding)
+            }
+            conv.bindEither(resultCallback = {
+                eParam.lift()
+            }, errorCallback = { errors ->
+                val indexedPrefix = if(eParam.indexed) { "indexed " } else { "" }
+                EventHookError(
+                    location = hook.range,
+                    message = "Cannot use type ${eParam.param.vmType.prettyPrint()} as an ${indexedPrefix}event parameter: ${errors.joinToString("; ")}"
+                ).asError()
+            })
+        }.flatten().map {
+            patt.copy(eventParams = it)
+        }.map(typeCheckContactTarget) { p, _ -> p }
     }
 
     private fun hookTypesMatch(

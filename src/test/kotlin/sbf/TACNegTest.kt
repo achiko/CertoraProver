@@ -17,55 +17,61 @@
 
 package sbf
 
+import config.*
 import sbf.cfg.*
 import sbf.disassembler.SbfRegister
 import sbf.disassembler.Label
 import org.junit.jupiter.api.*
+import org.junit.jupiter.params.*
+import org.junit.jupiter.params.provider.*
 
 
 class TACNegTest {
     /** 64-bits unsigned division **/
-    @Test
-    fun test1() {
-        /**
-          r2 := -9223372036854775808
-          r3 := -5
-          r4 := -9223372036854775807
-          r2 := neg(r2)
-          r3 := neg(r3)
-          r4 := neg(r4)
-          assert(r2 == -9223372036854775808)
-          assert(r3 == 5)
-          assert(9223372036854775807)
-         */
-        val r2 = Value.Reg(SbfRegister.R2_ARG)
-        val r3 = Value.Reg(SbfRegister.R3_ARG)
-        val r4 = Value.Reg(SbfRegister.R4_ARG)
-        val r5 = Value.Reg(SbfRegister.R5_ARG)
-        val cfg = MutableSbfCFG("test1")
-        val b1 = cfg.getOrInsertBlock(Label.Address(1))
-        cfg.setEntry(b1)
-        cfg.setExit(b1)
+    @ParameterizedTest
+    @ValueSource(booleans = [true, false])
+    fun test1(sound: Boolean) {
+        ConfigScope(SolanaConfig.TACSoundSignedMath, sound).use {
+            /**
+            r2 := -9223372036854775808
+            r3 := -5
+            r4 := -9223372036854775807
+            r2 := neg(r2)
+            r3 := neg(r3)
+            r4 := neg(r4)
+            assert(r2 == -9223372036854775808)
+            assert(r3 == 5)
+            assert(9223372036854775807)
+            */
+            val r2 = Value.Reg(SbfRegister.R2)
+            val r3 = Value.Reg(SbfRegister.R3)
+            val r4 = Value.Reg(SbfRegister.R4)
+            val r5 = Value.Reg(SbfRegister.R5)
+            val cfg = MutableSbfCFG("test1")
+            val b1 = cfg.getOrInsertBlock(Label.Address(1))
+            cfg.setEntry(b1)
+            cfg.setExit(b1)
 
-        b1.add(SbfInstruction.Bin(BinOp.MOV, r2, Value.Imm(Long.MIN_VALUE.toULong()), true))
-        b1.add(SbfInstruction.Bin(BinOp.MOV, r3, Value.Imm((-5L).toULong()), true))
-        b1.add(SbfInstruction.Bin(BinOp.MOV, r4, Value.Imm(Long.MIN_VALUE.toULong() + 1U), true))
-        b1.add(SbfInstruction.Un(UnOp.NEG, r2, true))
-        b1.add(SbfInstruction.Un(UnOp.NEG, r3, true))
-        b1.add(SbfInstruction.Un(UnOp.NEG, r4, true))
+            b1.add(SbfInstruction.Bin(BinOp.MOV, r2, Value.Imm(Long.MIN_VALUE.toULong()), true))
+            b1.add(SbfInstruction.Bin(BinOp.MOV, r3, Value.Imm((-5L).toULong()), true))
+            b1.add(SbfInstruction.Bin(BinOp.MOV, r4, Value.Imm(Long.MIN_VALUE.toULong() + 1U), true))
+            b1.add(SbfInstruction.Un(UnOp.NEG, r2))
+            b1.add(SbfInstruction.Un(UnOp.NEG, r3))
+            b1.add(SbfInstruction.Un(UnOp.NEG, r4))
 
-        b1.add(SbfInstruction.Bin(BinOp.MOV, r5, Value.Imm(Long.MIN_VALUE.toULong()), true))
-        b1.add(SbfInstruction.Assert(Condition(CondOp.EQ, r2, r5)))
-        b1.add(SbfInstruction.Assert(Condition(CondOp.EQ, r3, Value.Imm(5UL))))
+            b1.add(SbfInstruction.Bin(BinOp.MOV, r5, Value.Imm(Long.MIN_VALUE.toULong()), true))
+            b1.add(SbfInstruction.Assert(Condition(CondOp.EQ, r2, r5)))
+            b1.add(SbfInstruction.Assert(Condition(CondOp.EQ, r3, Value.Imm(5UL))))
 
-        b1.add(SbfInstruction.Bin(BinOp.MOV, r5, Value.Imm(9223372036854775807UL), true))
-        b1.add(SbfInstruction.Assert(Condition(CondOp.EQ, r4, r5)))
-        b1.add(SbfInstruction.Exit())
+            b1.add(SbfInstruction.Bin(BinOp.MOV, r5, Value.Imm(9223372036854775807UL), true))
+            b1.add(SbfInstruction.Assert(Condition(CondOp.EQ, r4, r5)))
+            b1.add(SbfInstruction.Exit())
 
-        println("$cfg")
-        val tacProg = toTAC(cfg)
-        println(dumpTAC(tacProg))
-        Assertions.assertEquals(true, verify(tacProg))
+            println("$cfg")
+            val tacProg = toTAC(cfg)
+            println(dumpTAC(tacProg))
+            Assertions.assertEquals(true, verify(tacProg))
+        }
     }
 
 

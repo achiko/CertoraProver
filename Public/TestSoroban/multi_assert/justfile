@@ -1,0 +1,6 @@
+
+build:
+    RUSTFLAGS="-C strip=none" cargo build --target=wasm32-unknown-unknown --release --features certora
+
+clean:
+    cargo clean

@@ -77,6 +77,7 @@ private val tokenName: List<String> = sym
             sym.GOODDESCRIPTION -> "good_description"
             sym.PRESERVED -> "preserved"
             sym.ON_TRANSACTION_BOUNDARY -> "onTransactionBoundary"
+            sym.LINKS -> "links"
 
             sym.USING -> "using"
             sym.IMPORT -> "import"
@@ -151,6 +152,8 @@ private val tokenName: List<String> = sym
             sym.RP -> ")"
             sym.QUESTION -> "?"
             sym.DOT -> "."
+            sym.INDEXED -> "indexed"
+            sym.EVENT -> "event"
 
             // not literals, just input classes. the actual matched string is not known from the constant name
             sym.RELOP -> "(relop)"

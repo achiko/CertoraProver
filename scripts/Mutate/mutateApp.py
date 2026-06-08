@@ -22,6 +22,7 @@ import re
 import shutil
 import subprocess
 import sys
+from collections import UserDict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Any, List, Dict, Tuple, Set, Union
@@ -503,7 +504,7 @@ class WebUtils:
         self.mutation_test_final_result_url = f"https://{mutation_test_domain}"
         mutation_logger.debug(f"Using server {args.server} with mutation_test_id_url {self.mutation_test_id_url}")
 
-    def put_response_with_timeout(self, url: str, data: Any, headers: Dict[str, str]) -> Optional[requests.Response]:
+    def put_response_with_timeout(self, url: str, data: Any, headers: UserDict) -> Optional[requests.Response]:
         """
         Executes a put request and returns the response, uses a timeout mechanism
 
@@ -526,7 +527,7 @@ class WebUtils:
         return None
 
     def put_json_request_with_timeout(self, url: str, body: Dict[str, Any],
-                                      headers: Dict[str, str]) -> Optional[requests.Response]:
+                                      headers: UserDict) -> Optional[requests.Response]:
         """
         Executes a put request and returns the response, uses a timeout mechanism
 
@@ -1725,7 +1726,7 @@ class MutateApp:
     @staticmethod
     def upload_file_to_cloud_storage(web_utils: WebUtils, presigned_url: str, data: Any) -> None:
         mutation_logger.debug("Uploading file")
-        headers = {"Content-Type": "application/json"}
+        headers = UserDict({"Content-Type": "application/json"})
         put_resp = web_utils.put_response_with_timeout(presigned_url, json.dumps(data), headers)
         if not put_resp:
             raise ConnectionError(f"Failed to submit to presigned URL. url - {presigned_url}")
@@ -1973,7 +1974,7 @@ def get_top_level_rules(progress_json: Dict[str, Any]) -> Optional[List[Dict[str
 
 
 certora_key = os.getenv(KEY_ENV_VAR, '')
-auth_headers = {"Authorization": f"Bearer {certora_key}", "Content-Type": "application/json"}
+auth_headers = UserDict({"Authorization": f"Bearer {certora_key}", "Content-Type": "application/json"})
 default_cookies = {str(MConstants.CERTORA_KEY): certora_key}
 
 

@@ -196,8 +196,38 @@ data class SetOfFiniteIntervals(val intervals: List<FiniteInterval>) {
         return SetOfFiniteIntervals(out)
     }
 
-    fun join(other: SetOfFiniteIntervals): SetOfFiniteIntervals =
-        other.intervals.fold(this) { acc, i -> acc.add(i) }
+    fun join(other: SetOfFiniteIntervals): SetOfFiniteIntervals {
+        // Both lists are already sorted with no overlaps or consecutive pairs (class invariant).
+        // A two-pointer merge produces the union in O(n + m) instead of the O(m * n) cost of
+        // calling add() for each interval in other.
+        val result = ArrayList<FiniteInterval>(this.intervals.size + other.intervals.size)
+        var i = 0
+        var j = 0
+        var pending: FiniteInterval? = null
+
+        while (i < this.intervals.size || j < other.intervals.size) {
+            val next = when {
+                i >= this.intervals.size -> other.intervals[j++]
+                j >= other.intervals.size -> this.intervals[i++]
+                this.intervals[i].l <= other.intervals[j].l -> this.intervals[i++]
+                else -> other.intervals[j++]
+            }
+            val merged = pending?.union(next)
+            pending = when {
+                pending == null -> next
+                merged != null  -> merged
+                else -> {
+                    result.add(pending)
+                    next
+                }
+            }
+        }
+
+        if (pending != null) {
+            result.add(pending)
+        }
+        return SetOfFiniteIntervals(result)
+    }
 
     fun remove(itv: FiniteInterval): SetOfFiniteIntervals {
         val out = ArrayList<FiniteInterval>()

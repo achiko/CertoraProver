@@ -50,6 +50,7 @@ log = logging.getLogger(__name__)
 
 
 VIOLATIONS_EXIT_CODE = 100
+CLOUD_ERROR_EXIT_CODE = 426
 
 @dataclass
 class CertoraRunResult:
@@ -220,9 +221,13 @@ def run_remote(
 
     pretty_args = [f"'{a}'" if " " in a else a for a in args]
 
-    ok = cloud.cli_verify_and_report(" ".join(pretty_args), context.wait_for_results)
+    job_list = cloud.cli_verify(" ".join(pretty_args))
+    if job_list:
+        ok = cloud.cli_report(job_list, context.wait_for_results)
+        exit_code = 0 if ok else VIOLATIONS_EXIT_CODE
+    else:
+        exit_code = CLOUD_ERROR_EXIT_CODE
 
-    exit_code = 0 if ok else VIOLATIONS_EXIT_CODE
     result: Optional[CertoraRunResult] = None
     if cloud.statusUrl:
         result = CertoraRunResult(
@@ -248,8 +253,10 @@ def handle_exit(exit_code: int, return_value: Optional[CertoraRunResult]) -> Opt
     """
     if exit_code == VIOLATIONS_EXIT_CODE:
         raise CertoraFoundViolations("violations were found", return_value)
+    if exit_code == CLOUD_ERROR_EXIT_CODE:
+        raise Util.CertoraUserInputError("Certora Prover run failed due to a job submission error")
     if exit_code != 0:
-        raise Util.CertoraUserInputError(f"run_certora failed (code {exit_code})")
+        raise Util.CertoraUserInputError(f"Certora Prover run failed (code {exit_code})")
     return return_value
 
 

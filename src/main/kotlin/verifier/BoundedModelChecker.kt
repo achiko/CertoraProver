@@ -19,6 +19,7 @@ package verifier
 
 import allocator.Allocator
 import analysis.CommandWithRequiredDecls
+import analysis.controlflow.AllPathsRevertedResult
 import analysis.controlflow.checkIfAllPathsAreLastReverted
 import analysis.icfg.InlinedMethodCallStack
 import analysis.storage.StorageAnalysisResult
@@ -522,7 +523,7 @@ class BoundedModelChecker(
                 .parallelStream()
                 .filter { (_, funcData) ->
                     // Skip always reverting functions
-                    !checkIfAllPathsAreLastReverted(funcData.funcProg)
+                    checkIfAllPathsAreLastReverted(funcData.funcProg) == AllPathsRevertedResult.NON_REVERTING_PATH_EXISTS
                 }
                 .map { (contractFunc, funcData) ->
                     val optimizedFuncProg = funcData.funcProg.applySummaries().optimize(scene)
@@ -956,7 +957,7 @@ class BoundedModelChecker(
         suspend fun checkRecursive(
             parentRule: BMCRule,
             parentFuncs: FunctionSequence
-        ): TreapList<out RuleCheckResult> {
+        ): TreapList<RuleCheckResult> {
             if (failLimit > 0 && nSatResults.get() >= failLimit) {
                 // Hit the max number of errors that should be found. Bail out
                 return treapListOf()

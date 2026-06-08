@@ -174,7 +174,7 @@ object ContractUtils {
                     // Convert constant slots that are in fact optimized hash applications back to hash applications
                     CoreToCoreTransformer(
                             ReportTypes.UNOPTIMIZE_HASHES
-                    ) { c: CoreTACProgram -> UnoptimizeHashResults(c).doWork() },
+                    ) { c: CoreTACProgram -> UnoptimizeHashResults(c, source).doWork() },
                     // Add opaque identify annotations to functions
                     CoreToCoreTransformer(
                         ReportTypes.INTERNAL_FUNCTION_FINDER,

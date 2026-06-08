@@ -46,7 +46,9 @@ import log.Logger
 import log.LoggerTypes
 import parallel.coroutines.parallelMapOrdered
 import report.ConsoleReporter
+import rules.prepareForTwoStageInterpreted
 import scene.SceneFactory
+import spec.cvlast.SpecType
 import spec.rules.EcosystemAgnosticRule
 import spec.rules.IRule
 import utils.coRunCatching
@@ -142,14 +144,6 @@ abstract class VerificationFlow<R : SingleRule> : Closeable {
      * and generates subrules as needed. Builds and updates the rule tree for reporting.
      */
     suspend fun solve(): List<RuleCheckResult.Leaf> {
-        val results = mutableListOf<RuleCheckResult.Leaf>()
-        fun reportRuleEndResult(rule: IRule, result: RuleCheckResult.Leaf) {
-            treeViewReporter.signalEnd(rule, result)
-            reporterContainer.addResults(result)
-            results.add(result)
-            logger.info { "Solving of rule ${rule.ruleIdentifier} completed (result: ${result.javaClass.simpleName})" }
-        }
-
         val encodedRules = buildRules()
         /**
          *  Builds the initial tree of rules - Note that not all rules that are
@@ -186,56 +180,20 @@ abstract class VerificationFlow<R : SingleRule> : Closeable {
             reportRuleEndResult(res.first, res.second)
         }
 
-        suspend fun solveAndReportRule(encodedRule: EncodedRule<R>){
-            annotateCallStackAsync("rule.${encodedRule.rule.ruleIdentifier.displayName}") {
-                logger.info { "Starting to solve rule ${encodedRule.rule.ruleIdentifier}" }
-                treeViewReporter.signalStart(encodedRule.rule)
-                val result = solve(encodedRule)
-                val reportedResult = result.fold(
-                    onSuccess = { success ->
-                        /**
-                         * Each rule may spawn new subrules, such as [rules.sanity.TACSanityChecks]
-                         * Note however, that we wait for the parent rule to be fully completed.
-                         * The sanity rule for instance, should only be spawned when the base rule
-                         * result is known to be SAT. Each such "continuation rule" is solved (sequentially!).
-                         */
-                        buildContinuationRules(encodedRule, success).forEach { subrule ->
-                            subrule.fold(
-                                onSuccess = { successRule ->
-                                    treeViewReporter.registerSubruleOf(successRule.rule, encodedRule.rule)
-                                    solveAndReportRule(successRule)
-                                },
-                                onFailure = {
-                                    if (it is RuleEncodingException) {
-                                        val rule = it.rule
-                                        treeViewReporter.registerSubruleOf(rule, encodedRule.rule)
-                                        reportRuleEndResult(rule, RuleCheckResult.Error(rule, it.exception))
-                                    } else{
-                                        logger.warn { "Received an exception while creating more rules for completed base rule ${encodedRule.rule.ruleIdentifier}" }
-                                    }
-                                }
-                            )
-                        }
-                        success
-                    },
-                    onFailure = {
-                        RuleCheckResult.Error(encodedRule.rule, it)
-                    },
-                )
-                reportRuleEndResult(encodedRule.rule, reportedResult)
-            }
-        }
+        val failureResults = ruleFailures.map { it.second }
 
         /**
          * Solve all "top-level" / base rules in parallel. Note that internalSolveRule
          * calls itself internally for each generated [buildContinuationRules]. Subsequent
          * continuation rules are processed sequentially.
          */
-        splitOnMultiAssert.parallelMapOrdered { _, encodedRule ->
-            solveAndReportRule(encodedRule)
-        }
+        val parallelResults = splitOnMultiAssert
+            .parallelMapOrdered { _, encodedRule -> solveAndReportRule(encodedRule) }
+            .flatten()
+
         reporterContainer.toFile(scene)
-        return results.toList()
+
+        return failureResults + parallelResults
     }
 
     /**
@@ -249,6 +207,18 @@ abstract class VerificationFlow<R : SingleRule> : Closeable {
             DestructiveOptimizationsModeEnum.TWOSTAGE,
             DestructiveOptimizationsModeEnum.TWOSTAGE_CHECKED -> solveTwoStage(encodedRule)
 
+            DestructiveOptimizationsModeEnum.TWOSTAGE_INTERPRETED -> {
+                val annotatedTac = encodedRule.code.prepareForTwoStageInterpreted()
+                return solve(
+                    rule = encodedRule.rule,
+                    code = prepareForDestructiveMode(annotatedTac),
+                    twoStageRound = TwoStageRound.FIRST_ROUND
+                ).toCheckResult(
+                    scene,
+                    encodedRule.rule,
+                    unoptimizedTac = annotatedTac // explicitly passing unoptimizedTAC here.
+                )
+            }
             DestructiveOptimizationsModeEnum.DISABLE -> solveSingleStage(encodedRule.rule, encodedRule.code)
             DestructiveOptimizationsModeEnum.ENABLE -> solveSingleStage(
                 rule = encodedRule.rule,
@@ -259,6 +229,74 @@ abstract class VerificationFlow<R : SingleRule> : Closeable {
             scene,
             encodedRule.rule
         )
+    }
+
+    private fun reportRuleEndResult(rule: IRule, result: RuleCheckResult.Leaf) {
+        treeViewReporter.signalEnd(rule, result)
+        reporterContainer.addResults(result)
+        logger.info { "Solving of rule ${rule.ruleIdentifier} completed (result: ${result.javaClass.simpleName})" }
+    }
+
+    private suspend fun solveAndReportRule(encodedRule: EncodedRule<R>): List<RuleCheckResult.Leaf> {
+        return annotateCallStackAsync("rule.${encodedRule.rule.ruleIdentifier.displayName}") {
+            logger.info { "Starting to solve rule ${encodedRule.rule.ruleIdentifier}" }
+            treeViewReporter.signalStart(encodedRule.rule)
+            val result = solve(encodedRule)
+
+            val continuationResults = result.fold(
+                onSuccess = { ruleCheckResult -> solveContinuation(encodedRule, ruleCheckResult) },
+                onFailure = { emptyList() },
+            )
+
+            val reportedResult = result.fold(
+                onSuccess = { it },
+                onFailure = { RuleCheckResult.Error(encodedRule.rule, it) },
+            )
+            reportRuleEndResult(encodedRule.rule, reportedResult)
+
+            continuationResults + reportedResult
+        }
+    }
+
+    /**
+     * Each rule may spawn new subrules, such as [rules.sanity.TACSanityChecks]
+     * Note however, that we wait for the parent rule to be fully completed.
+     * The sanity rule for instance, should only be spawned when the base rule
+     * result is known to be SAT. Each such "continuation rule" is solved (sequentially!).
+     */
+    private suspend fun solveContinuation(encodedRule: EncodedRule<R>, ruleCheckResult: RuleCheckResult.Leaf): List<RuleCheckResult.Leaf> {
+        return buildContinuationRules(encodedRule, ruleCheckResult).flatMap { subrule ->
+            subrule.fold(
+                onSuccess = { successRule ->
+                    // continuation rules are generated subrules.
+                    // this is where we register them as the generating rule's child.
+                    //
+                    // some rules are special in that they were built before the run,
+                    // and their parent has already been determined.
+                    // (currently, that's just vacuity rules).
+                    // these rules are not actually being "continued",
+                    // just placed in the tree as a side effect of continuation.
+                    val ruleType = successRule.rule.ruleType as? SpecType.Single.GeneratedFromBasicRule
+                        ?: error("got subrule $successRule that should have been generated")
+                    val parentRule = ruleType.getOriginatingRule()
+
+                    treeViewReporter.registerSubruleOf(successRule.rule, parentRule)
+                    solveAndReportRule(successRule)
+                },
+                onFailure = {
+                    if (it is RuleEncodingException) {
+                        val rule = it.rule
+                        treeViewReporter.registerSubruleOf(rule, encodedRule.rule)
+                        val errorResult = RuleCheckResult.Error(rule, it.exception)
+                        reportRuleEndResult(rule, errorResult)
+                        listOf(errorResult)
+                    } else {
+                        logger.warn { "Received an exception while creating more rules for completed base rule ${encodedRule.rule.ruleIdentifier}" }
+                        emptyList()
+                    }
+                },
+            )
+        }
     }
 
     /**

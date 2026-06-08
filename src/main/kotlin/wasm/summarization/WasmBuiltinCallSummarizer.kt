@@ -919,8 +919,7 @@ class WasmBuiltinCallSummarizer(private val typeContext: Map<WasmName, WasmProgr
                     AssumeAssertType.ASSERT, AssumeAssertType.CVT_ASSERT ->
                         TACCmd.Simple.AssertCmd(
                             argSymTac,
-                            "Failed property in cvt::assert",
-                            MetaMap(TACMeta.CVL_USER_DEFINED_ASSERT)
+                            "Failed property in cvt::assert", MetaMap(TACMeta.CVL_USER_DEFINED_ASSERT) + (TACMeta.ASSERT_ID to allocAssertId())
                         )
                     AssumeAssertType.SATISFY, AssumeAssertType.CVT_SATISFY ->
                         TACCmd.Simple.AssertCmd(

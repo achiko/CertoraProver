@@ -27,6 +27,7 @@ import report.dumps.CodeMap
 import report.dumps.DumpGraphHTML
 import rules.RuleCheckResult
 import rules.RuleCheckResult.Single.RuleCheckInfo.WithExamplesData.CounterExample
+import datastructures.stdcollections.*
 import scene.IContractWithSource
 import scene.IScene
 import solver.SolverResult
@@ -420,11 +421,13 @@ object HTMLReporter : OutputReporter {
         w.appendLine("<a name='${AVAILABLE_CONTRACTS}'><h2>Available contracts</h2></a>")
         w.appendLine("<table class=\"table table-bordered table-hover\">")
         w.appendLine("<tr><th>Name</th><th>Address</th><th>Pre-state</th><th colspan='2'>Methods</th></tr>")
-        scene.getContracts().mapNotNull { (it as? IContractWithSource)?.src }.forEach { c ->
+        scene.getContracts().forEach { contract ->
+            val c = (contract as? IContractWithSource)?.src ?: return@forEach
             w.appendLine("<tr>")
             w.appendLine("<td>${c.name}</td>")
             w.appendLine("<td>${c.address.toString(16)}</td>")
-            w.appendLine("<td>${c.state.mapValues { it.value.toString(16) }}</td>")
+            val displayLinks = contract.resolvedLinks.bySlot.mapValues { entry -> entry.value.joinToString(", ") { it.toString(16) } }
+            w.appendLine("<td>${displayLinks}</td>")
             w.appendLine(/* .joinToString("<br/>")*/
                 c.methods.map { method ->
                     val name = "${c.name}-${method.getPrettyName()}"

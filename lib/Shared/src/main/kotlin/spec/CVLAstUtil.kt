@@ -68,7 +68,8 @@ data class CVL(
     val internal: Map<SummarySignature.Internal, SpecCallSummary.ExpressibleInCVL>,
     val external: Map<SummarySignature.External, SpecCallSummary.ExpressibleInCVL>,
     override val unresolvedSummaries: Map<SummarySignature.External, SpecCallSummary.ExpressibleInCVL>,
-    val methodFilters: Map<RuleIdentifier, Map<String, List<Method>>> /* rule-identifier -> method-param-name -> list of usable methods */
+    val methodFilters: Map<RuleIdentifier, Map<String, List<Method>>>, /* rule-identifier -> method-param-name -> list of usable methods */
+    val linkEntries: List<CVLLinkEntry> = emptyList()
 ) : IAstCodeBlocks, IWithSummaryInfo {
 
     override val invs: List<CVLInvariant>

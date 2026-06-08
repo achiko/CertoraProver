@@ -1,0 +1,20 @@
+{
+	"rules": {
+		"cvlSummarySingleReturn": "SUCCESS",
+		"cvlSummaryDoubleReturn": "SUCCESS",
+		"cvlSummaryVoidCall": "SUCCESS",
+		"envfreeFuncsStaticCheck": {
+			"SUCCESS": [
+				"CertoraUnresolvedHarness.callGas()",
+				"CertoraUnresolvedHarness.callValue()",
+				"CertoraUnresolvedHarness.callersSender()",
+				"CertoraUnresolvedHarness.executingAddr()",
+				"CertoraUnresolvedHarness.inSize()",
+				"CertoraUnresolvedHarness.originalCallee()",
+				"CertoraUnresolvedHarness.outSize()",
+				"lastResult()",
+				"target()"
+			]
+		}
+	}
+}

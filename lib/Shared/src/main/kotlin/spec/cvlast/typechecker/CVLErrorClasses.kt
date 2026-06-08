@@ -3228,3 +3228,210 @@ class IllegalRerouteSummary(
         is ErrorSort.NoMatchingFunction -> "No external functions with name ${errorType.missingFunctionName.methodId} in reroute host contract ${errorType.missingFunctionName.host.name}. $caveat"
     }
 }
+
+// LinksBlockError /////////////////////////////////////////////////////////////////////////////////////////////
+
+@KSerializable
+@CVLErrorType(
+    category = CVLErrorCategory.TYPECHECKING,
+    description = "Error in a 'links' block declaration"
+)
+@CVLErrorExample(
+    exampleCVLWithRange = """
+        using PrimaryContract as a;
+        links {
+            #undeclared.field => a;#
+        }
+    """,
+    exampleMessage = "Link source `undeclared` is not a declared contract alias",
+)
+@CVLErrorExample(
+    exampleCVLWithRange = """
+        using PrimaryContract as a;
+        links {
+            #a.field => undeclared;#
+        }
+    """,
+    exampleMessage = "Link target `undeclared` not declared as contract alias. Did you mean to add: `using <Contract> as undeclared`?",
+)
+@CVLErrorExample(
+    exampleCVLWithRange = """
+        using PrimaryContract as a;
+        using SecondaryContract as b;
+        links {
+            #a => b;#
+        }
+    """,
+    exampleMessage = "Link path must specify at least one field (e.g. `a.field => b`)",
+)
+@CVLErrorExample(
+    exampleCVLWithRange = """
+        using PrimaryContract as a;
+        using SecondaryContract as b;
+        links {
+            #a.nonexistentField => b;#
+        }
+    """,
+    exampleMessage = "Field 'nonexistentField' not found in storage or immutables of contract PrimaryContract. " +
+        "This can happen when the compiler does not provide storage layout information " +
+        "(e.g., solc versions before 0.6.5).",
+)
+@CVLErrorExample(
+    exampleCVLWithRange = """
+        using PrimaryContract as a;
+        using SecondaryContract as b;
+        links {
+            #a.struct_field.nonexistent => b;#
+        }
+    """,
+    exampleMessage = "Field 'nonexistent' not found in struct PrimaryContract.ExampleStruct",
+)
+@CVLErrorExample(
+    exampleCVLWithRange = """
+        using PrimaryContract as a;
+        using SecondaryContract as b;
+        links {
+            #a.uint_field[0] => b;#
+        }
+    """,
+    exampleMessage = "Cannot index into type uint256 (expected array or mapping)",
+)
+@CVLErrorExample(
+    exampleCVLWithRange = """
+        using PrimaryContract as a;
+        using SecondaryContract as b;
+        links {
+            #a.uint_field.something => b;#
+        }
+    """,
+    exampleMessage = "Cannot access field 'something' on non-struct type uint256",
+)
+@CVLErrorExample(
+    exampleCVLWithRange = """
+        using PrimaryContract as a;
+        using SecondaryContract as b;
+        ghost bool g;
+        links {
+            #a.array_field[g] => b;#
+        }
+    """,
+    exampleMessage = "",
+)
+@CVLErrorExample(
+    exampleCVLWithRange = """
+        using PrimaryContract as a;
+        using SecondaryContract as b;
+        links {
+            a.uint_field => b;
+            #a.uint_field => b;#
+        }
+    """,
+)
+@CVLErrorExample(
+    exampleCVLWithRange = """
+        using PrimaryContract as a;
+        using PrimaryContract as a2;
+        using SecondaryContract as b;
+        links {
+            a.uint_field => b;
+            #a2.uint_field => b;#
+        }
+    """,
+)
+@CVLErrorExample(
+    exampleCVLWithRange = """
+        using PrimaryContract as a;
+        using SecondaryContract as b;
+        links {
+            #a.immutable_field.something => b;#
+        }
+    """,
+    exampleMessage = "Immutable 'immutable_field' cannot have nested field or index access in link paths",
+)
+@CVLErrorExample(
+    exampleCVLWithRange = """
+        using PrimaryContract as a;
+        using SecondaryContract as b;
+        links {
+            #a[_] => b;#
+        }
+    """,
+    exampleMessage = "Link path must start with a field name (e.g. `a.field`, not `a[0]` or `a[_]`)",
+)
+@CVLErrorExample(
+    exampleCVLWithRange = """
+        using PrimaryContract as a;
+        using SecondaryContract as b;
+        links {
+            #a.bool_map[1] => b;#
+        }
+    """,
+    exampleMessage = "Link mapping index must be a bool or a compatible subtype",
+)
+@CVLErrorExample(
+    exampleCVLWithRange = """
+        using PrimaryContract as a;
+        using SecondaryContract as b;
+        links {
+            #a.uint_field[_] => b;#
+        }
+    """,
+    exampleMessage = "Cannot use wildcard on type uint256 (expected array or mapping)",
+)
+@CVLErrorExample(
+    exampleCVLWithRange = """
+        using PrimaryContract as a;
+        using SecondaryContract as b;
+        links {
+            #a.nested_map[0][_] => b;#
+        }
+    """,
+    exampleMessage = "Cannot mix concrete indices and wildcards in link paths (e.g., 'a[0][_]'). " +
+        "All indices must be the same kind.",
+)
+@CVLErrorExample(
+    exampleCVLWithRange = """
+        using PrimaryContract as a;
+        using SecondaryContract as b;
+        links {
+            #a.array_field[to_bytes4(1)] => b;#
+        }
+    """,
+    exampleMessage = "Link path index must be of type uint256 or a compatible subtype, but got bytes4",
+)
+@CVLErrorExample(
+    exampleCVLWithRange = """
+        using PrimaryContract as a;
+        using SecondaryContract as b;
+        links {
+            #a.static_array_field[3] => b;#
+        }
+    """,
+    exampleMessage = "Index 3 is out of bounds for static array of size 3",
+)
+class LinksBlockError(override val location: Range, override val message: String) : CVLError()
+
+@KSerializable
+@CVLErrorType(
+    category = CVLErrorCategory.TYPECHECKING,
+    description = "An error in the declaration of an event hook"
+)
+@CVLErrorExample(
+    exampleCVLWithRange = """
+#hook event TooMany(uint indexed a, uint indexed b, address indexed c, uint160 indexed d) {
+  assert true;
+}#
+""",
+    exampleMessage = "Too many indexed parameters: a, b, c, d; at most 3 are allowed"
+)
+@CVLErrorExample(
+    exampleCVLWithRange = """
+#hook event MyEvent(uint[] indexed b) {
+   assert true;
+}#
+    """,
+    exampleMessage = "Cannot use type uint256[] as an indexed event parameter: no correspondance type to convert to in hook context"
+)
+class EventHookError(
+    override val location: Range, override val message: String
+) : CVLError()

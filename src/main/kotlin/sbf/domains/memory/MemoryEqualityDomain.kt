@@ -21,7 +21,6 @@ import algorithms.UnionFind
 import com.certora.collect.*
 import sbf.disassembler.*
 import sbf.cfg.*
-import log.*
 import datastructures.stdcollections.*
 import sbf.callgraph.CVTCore
 import sbf.callgraph.CVTFunction
@@ -531,7 +530,7 @@ data class SetOfMemEqualityPredicate<Flags: IPTANodeFlags<Flags>>(
             return false
         }
 
-        if (this.isTop && other.isTop) {
+        if (this.isTop) {
             return true
         }
 
@@ -667,8 +666,8 @@ class MemEqualityPredicateDomain<Flags: IPTANodeFlags<Flags>>(
     ): MemEqualityPredicateDomain<Flags> {
 
         val out = this.deepCopy()
-        val leftPreds = memcmpSet.filterIsInstance<SymbolicMemEqualityPredicate<Flags>>()
-        val rightPreds  = other.memcmpSet.filterIsInstance<SymbolicMemEqualityPredicate<Flags>>()
+        val leftPreds = memcmpSet.toList().filterIsInstance<SymbolicMemEqualityPredicate<Flags>>()
+        val rightPreds  = other.memcmpSet.toList().filterIsInstance<SymbolicMemEqualityPredicate<Flags>>()
 
         for (leftPred in leftPreds) {
             for (rightPred in rightPreds) {
@@ -1057,7 +1056,7 @@ class MemEqualityPredicateDomain<Flags: IPTANodeFlags<Flags>>(
     private fun <TNum: INumValue<TNum>, TOffset: IOffset<TOffset>> getArgsForMemIntrinsics(
         memoryAbsVal: MemoryDomain<TNum, TOffset, Flags>
     ): MemIntrinsicsArgs<Flags>? {
-        val (r1, r2, r3) = listOf(Value.Reg(SbfRegister.R1_ARG), Value.Reg(SbfRegister.R2_ARG), Value.Reg(SbfRegister.R3_ARG))
+        val (r1, r2, r3) = listOf(Value.Reg(SbfRegister.R1), Value.Reg(SbfRegister.R2), Value.Reg(SbfRegister.R3))
         // len can be null
         val len = (memoryAbsVal.getScalars().getAsScalarValue(r3).type() as? SbfType.NumType)?.value?.toLongOrNull()
         // Since this domain is part of the [MemoryDomain], if `r1` does not point to any [PTACell] then [MemoryDomain] will complain
@@ -1125,7 +1124,7 @@ class MemEqualityPredicateDomain<Flags: IPTANodeFlags<Flags>>(
         val inst = locInst.inst
         check(inst is SbfInstruction.Call)
 
-        val r0 = Value.Reg(SbfRegister.R0_RETURN_VALUE)
+        val r0 = Value.Reg(SbfRegister.R0)
         if (inst.writeRegister.contains(r0)) {
             forget(r0)
         }
@@ -1154,7 +1153,7 @@ class MemEqualityPredicateDomain<Flags: IPTANodeFlags<Flags>>(
         }
         len?.let {
             val memcmpTerm = Memcmp(op1.concretize(), op2.concretize(), it)
-            instMap = instMap.put(Value.Reg(SbfRegister.R0_RETURN_VALUE), memcmpTerm)
+            instMap = instMap.put(Value.Reg(SbfRegister.R0), memcmpTerm)
         }
     }
 
@@ -1166,10 +1165,10 @@ class MemEqualityPredicateDomain<Flags: IPTANodeFlags<Flags>>(
         val inst = locInst.inst
         check(inst is SbfInstruction.Call)
 
-        val r0 = Value.Reg(SbfRegister.R0_RETURN_VALUE)
-        val r1 = Value.Reg(SbfRegister.R1_ARG)
-        val r2 = Value.Reg(SbfRegister.R2_ARG)
-        val r3 = Value.Reg(SbfRegister.R3_ARG)
+        val r0 = Value.Reg(SbfRegister.R0)
+        val r1 = Value.Reg(SbfRegister.R1)
+        val r2 = Value.Reg(SbfRegister.R2)
+        val r3 = Value.Reg(SbfRegister.R3)
 
         if (inst.writeRegister.contains(r0)) {
             forget(r0)
@@ -1200,8 +1199,8 @@ class MemEqualityPredicateDomain<Flags: IPTANodeFlags<Flags>>(
         val inst = locInst.inst
         check(inst is SbfInstruction.Call)
 
-        val r0 = Value.Reg(SbfRegister.R0_RETURN_VALUE)
-        val r1 = Value.Reg(SbfRegister.R1_ARG)
+        val r0 = Value.Reg(SbfRegister.R0)
+        val r1 = Value.Reg(SbfRegister.R1)
 
 
         if (inst.writeRegister.contains(r0)) {
@@ -1226,7 +1225,7 @@ class MemEqualityPredicateDomain<Flags: IPTANodeFlags<Flags>>(
                 else -> false
             }
 
-        val stackPtr = Value.Reg(SbfRegister.R10_STACK_POINTER)
+        val stackPtr = Value.Reg(SbfRegister.R10)
         val topStack = (memoryAbsVal.getScalars().getAsScalarValue(stackPtr).type() as? SbfType.PointerType.Stack)?.offset?.toLongOrNull()
         check(topStack != null){ "r10 should point to a statically known stack offset"}
 
@@ -1244,10 +1243,10 @@ class MemEqualityPredicateDomain<Flags: IPTANodeFlags<Flags>>(
     ) {
         class MemEqualityPredicateSummaryVisitor: SummaryVisitor {
             override fun noSummaryFound(locInst: LocatedSbfInstruction) {
-                forget(Value.Reg(SbfRegister.R0_RETURN_VALUE))
+                forget(Value.Reg(SbfRegister.R0))
             }
             override fun processReturnArgument(locInst: LocatedSbfInstruction, type: MemSummaryArgumentType) {
-                forget(Value.Reg(SbfRegister.R0_RETURN_VALUE))
+                forget(Value.Reg(SbfRegister.R0))
             }
             override fun processArgument(
                 @Suppress("UNUSED_PARAMETER") locInst: LocatedSbfInstruction,

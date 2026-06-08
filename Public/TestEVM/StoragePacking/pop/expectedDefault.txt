@@ -1,0 +1,1 @@
+Detected and rewrote StructAccess_offset0_base.ArrayAccess_base.S_Root_slot0 as a packed array of width 16 bits

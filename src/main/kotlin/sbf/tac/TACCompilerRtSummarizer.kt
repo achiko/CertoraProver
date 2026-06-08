@@ -20,7 +20,6 @@ package sbf.tac
 import sbf.callgraph.CompilerRtFunction
 import sbf.cfg.*
 import sbf.disassembler.SbfRegister
-import vc.data.*
 import datastructures.stdcollections.*
 import sbf.SolanaConfig
 import sbf.callgraph.FPCompilerRtFunction
@@ -30,6 +29,8 @@ import sbf.domains.INumValue
 import sbf.domains.IOffset
 import sbf.domains.IPTANodeFlags
 import sbf.support.UnsupportedCall
+import vc.data.TACCmd
+import vc.data.TACSymbol
 
 /**
  * Summarize compiler-rt functions.
@@ -40,16 +41,16 @@ open class SummarizeCompilerRt<TNum : INumValue<TNum>, TOffset : IOffset<TOffset
 
     /** @return empty list if function is not summarized **/
     context(SbfCFGToTAC<TNum, TOffset, TFlags>)
-    operator fun invoke(locInst: LocatedSbfInstruction): List<TACCmd.Simple> {
+    internal operator fun invoke(locInst: LocatedSbfInstruction): List<TACCmd.Simple> {
         val inst = locInst.inst
         check(inst is SbfInstruction.Call) { "summarizeCompilerRt expects a call instruction instead of $inst" }
 
         val function = CompilerRtFunction.from(inst.name) ?: return listOf()
         return when (function) {
             is CompilerRtFunction.SignedInteger64 -> {
-                val res = exprBuilder.mkVar(SbfRegister.R0_RETURN_VALUE)
-                val arg1 = exprBuilder.mkVar(SbfRegister.R1_ARG)
-                val arg2 = exprBuilder.mkVar(SbfRegister.R2_ARG)
+                val res = sbfTacB.mkVar(SbfRegister.R0)
+                val arg1 = sbfTacB.mkVar(SbfRegister.R1)
+                val arg2 = sbfTacB.mkVar(SbfRegister.R2)
                 val summarizer = SummarizeSignedInteger64CompilerRt<TNum, TOffset, TFlags>()
                 val cmds = when (function.value) {
                     SignedInteger64CompilerRtFunction.DIVDI3 -> summarizer.summarizeDivdi3(res, arg1, arg2)
@@ -95,24 +96,30 @@ open class SummarizeCompilerRt<TNum : INumValue<TNum>, TOffset : IOffset<TOffset
                 } + listOf(Debug.endFunction(inst.name))
             }
             is CompilerRtFunction.FP -> {
-                val res = exprBuilder.mkVar(SbfRegister.R0_RETURN_VALUE)
-                val arg1 = exprBuilder.mkVar(SbfRegister.R1_ARG)
-                val arg2 = exprBuilder.mkVar(SbfRegister.R2_ARG)
+                val res = sbfTacB.mkVar(SbfRegister.R0)
+                val arg1 = sbfTacB.mkVar(SbfRegister.R1)
+                val arg2 = sbfTacB.mkVar(SbfRegister.R2)
+                val fpSummarizer: SummarizeFPCompilerRt<TNum, TOffset, TFlags> =
+                    if (SolanaConfig.UseTACFPDualEncoding.get()) {
+                        SummarizeFPDualEncoding()
+                    } else {
+                        SummarizeFPCompilerRt()
+                    }
                 val cmds = when (function.value) {
-                    FPCompilerRtFunction.UNORDDF2 -> SummarizeFPCompilerRt<TNum, TOffset, TFlags>().summarizeUnorddf2(res, arg1, arg2)
-                    FPCompilerRtFunction.ADDDF3 -> SummarizeFPCompilerRt<TNum, TOffset, TFlags>().summarizeAdddf3(res, arg1, arg2)
-                    FPCompilerRtFunction.SUBDF3 -> SummarizeFPCompilerRt<TNum, TOffset, TFlags>().summarizeSubdf3(res, arg1, arg2)
-                    FPCompilerRtFunction.MULDF3 -> SummarizeFPCompilerRt<TNum, TOffset, TFlags>().summarizeMuldf3(res, arg1, arg2)
-                    FPCompilerRtFunction.DIVDF3 -> SummarizeFPCompilerRt<TNum, TOffset, TFlags>().summarizeDivdf3(res, arg1, arg2)
-                    FPCompilerRtFunction.NEGDF2 -> SummarizeFPCompilerRt<TNum, TOffset, TFlags>().summarizeNegdf3(res, arg1)
-                    FPCompilerRtFunction.FIXUNSDFDI -> SummarizeFPCompilerRt<TNum, TOffset, TFlags>().summarizeFixunsdfdi(res, arg1)
-                    FPCompilerRtFunction.FLOATUNDIDF -> SummarizeFPCompilerRt<TNum, TOffset, TFlags>().summarizeFloatundidf(res, arg1)
-                    FPCompilerRtFunction.EQDF2 -> SummarizeFPCompilerRt<TNum, TOffset, TFlags>().summarizeEqdf2(res, arg1, arg2)
-                    FPCompilerRtFunction.NEDF2 -> SummarizeFPCompilerRt<TNum, TOffset, TFlags>().summarizeNedf2(res, arg1, arg2)
-                    FPCompilerRtFunction.GEDF2 -> SummarizeFPCompilerRt<TNum, TOffset, TFlags>().summarizeGedf2(res, arg1, arg2)
-                    FPCompilerRtFunction.LTDF2 -> SummarizeFPCompilerRt<TNum, TOffset, TFlags>().summarizeLtdf2(res, arg1, arg2)
-                    FPCompilerRtFunction.LEDF2 -> SummarizeFPCompilerRt<TNum, TOffset, TFlags>().summarizeLedf2(res, arg1, arg2)
-                    FPCompilerRtFunction.GTDF2 -> SummarizeFPCompilerRt<TNum, TOffset, TFlags>().summarizeGtdf2(res, arg1, arg2)
+                    FPCompilerRtFunction.UNORDDF2 -> fpSummarizer.summarizeUnorddf2(res, arg1, arg2)
+                    FPCompilerRtFunction.ADDDF3 -> fpSummarizer.summarizeAdddf3(res, arg1, arg2)
+                    FPCompilerRtFunction.SUBDF3 -> fpSummarizer.summarizeSubdf3(res, arg1, arg2)
+                    FPCompilerRtFunction.MULDF3 -> fpSummarizer.summarizeMuldf3(res, arg1, arg2)
+                    FPCompilerRtFunction.DIVDF3 -> fpSummarizer.summarizeDivdf3(res, arg1, arg2)
+                    FPCompilerRtFunction.NEGDF2 -> fpSummarizer.summarizeNegdf3(res, arg1)
+                    FPCompilerRtFunction.FIXUNSDFDI -> fpSummarizer.summarizeFixunsdfdi(res, arg1)
+                    FPCompilerRtFunction.FLOATUNDIDF -> fpSummarizer.summarizeFloatundidf(res, arg1)
+                    FPCompilerRtFunction.EQDF2 -> fpSummarizer.summarizeEqdf2(res, arg1, arg2)
+                    FPCompilerRtFunction.NEDF2 -> fpSummarizer.summarizeNedf2(res, arg1, arg2)
+                    FPCompilerRtFunction.GEDF2 -> fpSummarizer.summarizeGedf2(res, arg1, arg2)
+                    FPCompilerRtFunction.LTDF2 -> fpSummarizer.summarizeLtdf2(res, arg1, arg2)
+                    FPCompilerRtFunction.LEDF2 -> fpSummarizer.summarizeLedf2(res, arg1, arg2)
+                    FPCompilerRtFunction.GTDF2 -> fpSummarizer.summarizeGtdf2(res, arg1, arg2)
                 }
                 debugCompilerRtFunction(inst, inst.readRegisters.size, cmds)
             }
@@ -123,10 +130,10 @@ open class SummarizeCompilerRt<TNum : INumValue<TNum>, TOffset : IOffset<TOffset
     private fun debugCompilerRtFunction(inst: SbfInstruction.Call, numArgs: Int, cmds: List<TACCmd.Simple>): List<TACCmd.Simple> {
         val inputArgs = mutableListOf<Pair<TACSymbol.Var, SbfFuncArgInfo>>()
         for (i in 1..numArgs) {
-            inputArgs.add(exprBuilder.mkVar(SbfRegister.getByValue(i.toByte())) to SbfFuncArgInfo(SbfArgSort.SCALAR, true))
+            inputArgs.add(sbfTacB.mkVar(SbfRegister.getByValue(i.toByte())) to SbfFuncArgInfo(SbfArgSort.SCALAR, true))
         }
         val fakeStartFuncAnnotation = SbfInlinedFuncStartAnnotation(inst.name, inst.name, id = -1, inputArgs, mockFor = null)
-        val fakeEndFuncAnnotation = SbfInlinedFuncEndAnnotation(inst.name, -1, exprBuilder.mkVar(SbfRegister.R0_RETURN_VALUE))
+        val fakeEndFuncAnnotation = SbfInlinedFuncEndAnnotation(inst.name, -1, sbfTacB.mkVar(SbfRegister.R0))
         return  listOf(Debug.startFunction(fakeStartFuncAnnotation)) +
             cmds +
             listOf(Debug.endFunction(fakeEndFuncAnnotation))

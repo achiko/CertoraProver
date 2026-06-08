@@ -100,7 +100,7 @@ fun PatternRewriter.solanaPatternsList() = listOf(
                     sym(A)
                 }
             },
-            TACExpr.Vec.IntAdd.Binary::class.java, TACExpr.Vec.Add::class.java
+            TACExpr.Vec.IntAdd.Binary::class.java, TACExpr.Vec.Add.Binary::class.java
         ),
 
         /**
@@ -114,14 +114,16 @@ fun PatternRewriter.solanaPatternsList() = listOf(
                 maybeNarrow(lSym(A) intMul c(C1)) intDiv c(C2)
             },
             handle = {
-                when {
-                    C1.n % C2.n == BigInteger.ZERO ->
-                        IntMul(sym(A), (C1.n / C2.n).asTACExpr)
+                runIf(C1.n != BigInteger.ZERO && C2.n != BigInteger.ZERO) {
+                    when {
+                        C1.n % C2.n == BigInteger.ZERO ->
+                            IntMul(sym(A), (C1.n / C2.n).asTACExpr)
 
-                    C2.n % C1.n == BigInteger.ZERO ->
-                        IntDiv(sym(A), (C2.n / C1.n).asTACExpr)
+                        C2.n % C1.n == BigInteger.ZERO ->
+                            IntDiv(sym(A), (C2.n / C1.n).asTACExpr)
 
-                    else -> null
+                        else -> null
+                    }
                 }
             },
             TACExpr.BinOp.IntDiv::class.java
@@ -129,12 +131,43 @@ fun PatternRewriter.solanaPatternsList() = listOf(
 
 
         /**
+         * `safeMathNarrow(a *int const1) / const2` ~~~>
+         *    `safeMathNarrow(a *int (const1/const2))` if const2 is a divisor of const1
+         *    `safeMathNarrow(a /int (const2/const1))` if const1 is a divisor of const2
+         *
+         * Sound because: safeMathNarrow guarantees `a *int const1` fits in [0, 2^256),
+         * so the bv256 division equals mathematical division (no wrapping, divisor != 0).
+         */
+        PatternHandler(
+            name = "bv-div-mul-consts",
+            pattern = {
+                safeMathNarrow(lSym(A) intMul c(C1)) div c(C2)
+            },
+            handle = {
+                runIf(C1.n != BigInteger.ZERO && C2.n != BigInteger.ZERO) {
+                    when {
+                        C1.n % C2.n == BigInteger.ZERO ->
+                            safeMathNarrow(IntMul(sym(A), (C1.n / C2.n).asTACExpr), Tag.Bit256)
+
+                        C2.n % C1.n == BigInteger.ZERO ->
+                            safeMathNarrow(IntDiv(sym(A), (C2.n / C1.n).asTACExpr), Tag.Bit256)
+
+                        else -> null
+                    }
+                }
+            },
+            TACExpr.BinOp.Div::class.java
+        ),
+
+        /**
          * `safeMathNarrow(a:bv256)` ~~~> a:bv256
+         * Follows copy chains: if the operand is a Tag.Int copy of a Tag.Bit256 variable,
+         * the pattern still matches (e.g., `safeMathNarrow(I1078)` where `I1078 = R1066:bv256`).
          */
         PatternHandler(
             name = "redundant-narrow",
             pattern = {
-                safeMathNarrow(lSym256(A))
+                safeMathNarrow(defChainLSym(A) { it.tag is Tag.Bit256 })
             },
             handle = {
                 sym(A)
@@ -213,6 +246,107 @@ fun PatternRewriter.solanaPatternsList() = listOf(
             TACExpr.Vec.IntAdd.Binary::class.java
         ),
 
+
+        /**
+         * Recognizes a fixed-point multiply split into high/low 64-bit parts and collapses it:
+         *
+         * ```
+         * I_hi     = (X >> K) *int Y                          // K in 1..63
+         * R_lo_raw = safeMathNarrow(2^(64-K) *int X) & (2^64-1)
+         * I_prod   = Y *int R_lo_raw
+         * result   = (safeMathNarrow(I_prod) >> 0x40) +int safeMathNarrow(I_hi)
+         * ```
+         * ~~~> `(X *int Y) /int 2^K`
+         *
+         * Sound because: `(X >> K) * Y + (X * 2^(64-K) mod 2^64) * Y / 2^64 = X * Y / 2^K`
+         * in unbounded integer arithmetic (the split avoids 64-bit overflow).
+         */
+        PatternHandler(
+            name = "fixed-point-multiply",
+            pattern = {
+                val mask = c(lowOnes(64))
+                val hi = safeMathNarrow((lSym(A) shr c(I1)) intMul lSym(B))
+                val lo = lSym(D) intMul (safeMathNarrow(c(C1) intMul lSym(C)) bwAnd mask)
+                (safeMathNarrow(lo) shr c(0x40)) intAdd hi
+            },
+            handle = {
+                val shift = I1.n
+                runIf(
+                    shift in 1..63 &&
+                        src(A) == src(C) &&
+                        src(B) == src(D) &&
+                        C1.n == twoToThe(64 - shift)
+                ) {
+                    IntDiv(IntMul(sym(A), sym(B)), twoToThe(shift).asTACExpr)
+                }
+            },
+            TACExpr.Vec.IntAdd.Binary::class.java
+        ),
+
+        /**
+         * Recognizes a constant multiply split into high/low 64-bit parts and collapses it:
+         *
+         * ```
+         * low    = safeMathNarrow(C *int X) & (2^64-1)        // C = 2^(64-K), K in 1..63
+         * high   = 2^64 *int (X >> K)
+         * result = safeMathNarrow(high) +int low
+         * ```
+         * ~~~> `X *int C`
+         *
+         * Sound because: `(X >> K) * 2^64 + (X * C) mod 2^64 = X * C`
+         * when `C = 2^(64-K)`, i.e., `C * 2^K = 2^64`.
+         */
+        PatternHandler(
+            name = "const-mul-split",
+            pattern = {
+                val mask = c(lowOnes(64))
+                val low = safeMathNarrow(c(C1) intMul lSym(A)) bwAnd mask
+                val high = c(twoToThe(64)) intMul (lSym(B) shr c(I1))
+                safeMathNarrow(high) intAdd low
+            },
+            handle = {
+                val shift = I1.n
+                runIf(
+                    shift in 1..63 &&
+                        src(A) == src(B) &&
+                        C1.n == twoToThe(64 - shift)
+                ) {
+                    IntMul(sym(A), C1.n.asTACExpr)
+                }
+            },
+            TACExpr.Vec.IntAdd.Binary::class.java
+        ),
+
+        /**
+         * Recognizes a fixed-point multiply via intermediate constant scaling:
+         *
+         * ```
+         * safeMathNarrow(X *int safeMathNarrow(C *int Y)) >> K  // K in 1..64
+         * ```
+         * ~~~> `safeMathNarrow((X *int Y) /int (2^K / C))`
+         *
+         * where `C` is a power of 2 and `2^K` is divisible by `C`.
+         * For example: C = 2^50, K = 64 → result = (X *int Y) /int 2^14.
+         */
+        PatternHandler(
+            name = "fixed-point-multiply-2",
+            pattern = {
+                safeMathNarrow(lSym(A) intMul safeMathNarrow(c(C1) intMul lSym(B))) shr c(I1)
+            },
+            handle = {
+                val shift = I1.n
+                val twoPowK = twoToThe(shift)
+                runIf(
+                    shift in 1..64 &&
+                        C1.n > BigInteger.ZERO &&
+                        twoPowK % C1.n == BigInteger.ZERO
+                ) {
+                    val divisor = twoPowK / C1.n
+                    safeMathNarrow(IntDiv(IntMul(sym(A), sym(B)), divisor.asTACExpr), Tag.Bit256)
+                }
+            },
+            TACExpr.BinOp.ShiftRightLogical::class.java
+        ),
 
     )
 }.orEmpty()

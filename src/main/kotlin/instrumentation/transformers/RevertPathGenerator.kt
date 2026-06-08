@@ -73,7 +73,10 @@ object RevertPathGenerator : CodeTransformer() {
                     } else {
                         // This call is nested within a @withrevert. Make this node jump to the end of its calling function
                         val current = lc.ptr.block
-                        val currCaller = callStack.last()
+                        // Library calls are inlined by the solc compiler, and we do not generate a confluence point on
+                        // the call site. For that reason we cannot consider them as the current caller but need to
+                        // jump one level higher on the callstack.
+                        val currCaller = callStack.lastOrNull { it.ref !is MethodRef || it.evmExternalMethodInfo?.isLibrary == false } ?: error("Could not find the last caller that should catch the revert handling.")
                         val currCallerCmd = graph.value.elab(currCaller.ptr)
                         val ends = startEndPairs.value[currCallerCmd]
                             ?: error("expected ${currCaller.ptr} to be a STACK_PUSH or CVL_FUNCTION_START annotation, got ${currCallerCmd.cmd}")
@@ -113,7 +116,7 @@ object RevertPathGenerator : CodeTransformer() {
         val alreadyInCurrent: Set<TACCmd.Simple.AnnotationCmd.Annotation<*>> = currentBlock.commands.mapNotNullToSet { c -> (c.cmd as? TACCmd.Simple.AnnotationCmd)?.annot }
         for (rec in labelStack.iterateUpStackPushRecords(cmd)) {
             if (caller.ptr == rec.ptr) { return res }
-            if (rec.annot.k == Inliner.CallStack.STACK_PUSH || (rec.annot.k == TACMeta.SNIPPET && rec.annot.v is SnippetCmd.CVLSnippetCmd.CVLFunctionStart)) {
+            if ((rec.annot.k == Inliner.CallStack.STACK_PUSH && (rec.annot.v as Inliner.CallStack.PushRecord).evmExternalMethodInfo?.isLibrary == false) || (rec.annot.k == TACMeta.SNIPPET && rec.annot.v is SnippetCmd.CVLSnippetCmd.CVLFunctionStart)) {
                 error("We found a call ${rec.annot} on the label stack before encountering our caller $caller.")
             }
             val endAnn = rec.matchingEndAnnotation()

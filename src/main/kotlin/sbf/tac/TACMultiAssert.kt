@@ -127,6 +127,9 @@ object TACMultiAssert {
      **/
     fun transformMulti(compiledRule: EncodedRule<EcosystemAgnosticRule>): List<EncodedRule<EcosystemAgnosticRule>> {
         val idToPtr = assertIdToAssertPtr(compiledRule.code)
+        if (idToPtr.isEmpty()) {
+            return listOf(transformSingle(compiledRule))
+        }
         val assertFilter = getAssertFilter()
 
         // Separate filter entries by type for efficient matching

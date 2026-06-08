@@ -72,6 +72,4 @@ object MsgValueInLoopChecker: InstrumentingBuiltinRuleChecker<MsgValueInLoopGene
         m.updateCode(newProg)
         return m.code as CoreTACProgram
     }
-
-    override val functionSetCanBeEmpty = true
 }

@@ -118,7 +118,7 @@ class InternalCVLSummarizer private constructor(
     }
 
     class ExpressionSummaryMaterializer(
-        val cvlCompiler: CVLCompiler?,
+        val cvlCompiler: CVLCompiler,
         val scene: IScene,
         val internalLinking: Summarizer.LinkingState<Int>
     ) : ExpressionSummaryHandler {
@@ -139,9 +139,6 @@ class InternalCVLSummarizer private constructor(
             summary: SpecCallSummary.Exp,
             enclosingProgram: CoreTACProgram
         ): SummarizationResult {
-            require(cvlCompiler != null) {
-                "Attempted to use expression summary without a cvl compiler"
-            }
             val internalSummaryId = enclosingProgram.analysisCache.graph.elab(where).snarrowOrNull<InternalCallSummary>()?.id
 
             val compiledSummary = cvlCompiler.compileExpressionSummary(summary)

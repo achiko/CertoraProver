@@ -17,12 +17,14 @@
 
 package sbf
 
+import config.ConfigScope
 import sbf.cfg.*
 import sbf.disassembler.*
 import sbf.domains.*
 import sbf.support.UnknownStackContentError
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.*
+import sbf.SolanaConfig.ForgetOnUntrackedStackLoad
 import sbf.callgraph.SolanaFunction
 import sbf.support.UnknownMemcpyLenError
 
@@ -41,13 +43,14 @@ class MemoryMemcpyTest {
         g: PTAGraph<TNum, TOffset, Flags>,
         base: Value.Reg,
         offset: Short,
-        width: Short
+        width: Short,
+        scalars: ScalarValueProvider<TNum, TOffset>
     ): PTASymCell<Flags>? {
         val lhs = Value.Reg(SbfRegister.R7)
         check(base != lhs)
         val inst = SbfInstruction.Mem(Deref(width, base, offset), lhs, true)
         val locInst = LocatedSbfInstruction(Label.fresh(), 0, inst)
-        g.doLoad(locInst, base, SbfType.top())
+        g.doLoad(locInst, base, SbfType.top(), scalars)
         return g.getRegCell(lhs)
     }
 
@@ -81,10 +84,16 @@ class MemoryMemcpyTest {
     }
 
     // Check that *([baseR] + [offset]) points to [node]
-    private fun <TNum: INumValue<TNum>, TOffset: IOffset<TOffset>, Flags: IPTANodeFlags<Flags>> checkPointsToNode(g: PTAGraph<TNum, TOffset, Flags>,
-                                  base: Value.Reg, offset: Short, width: Short,
-                                  node: PTANode<Flags>) {
-        Assertions.assertEquals(true, load(g, base, offset, width)?.getNode()?.id == node.getNode().id)
+    private fun <TNum: INumValue<TNum>, TOffset: IOffset<TOffset>, Flags: IPTANodeFlags<Flags>> checkPointsToNode(
+        g: PTAGraph<TNum, TOffset, Flags>,
+        base: Value.Reg, offset: Short, width: Short,
+        node: PTANode<Flags>,
+        scalars: ScalarValueProvider<TNum, TOffset>
+    ) {
+        Assertions.assertEquals(
+            true,
+            load(g, base, offset, width, scalars)?.getNode()?.id == node.getNode().id
+        )
     }
 
     private fun createMemcpy() = LocatedSbfInstruction(Label.fresh(),0, SbfInstruction.Call(SolanaFunction.SOL_MEMCPY.syscall.name))
@@ -107,10 +116,10 @@ class MemoryMemcpyTest {
     fun test01() {
         println("====== TEST 1: memcpy from stack to uninitialized stack  (known length) =======")
 
-        val r10 = Value.Reg(SbfRegister.R10_STACK_POINTER)
-        val r1 = Value.Reg(SbfRegister.R1_ARG)
-        val r2 = Value.Reg(SbfRegister.R2_ARG)
-        val r3 = Value.Reg(SbfRegister.R3_ARG)
+        val r10 = Value.Reg(SbfRegister.R10)
+        val r1 = Value.Reg(SbfRegister.R1)
+        val r2 = Value.Reg(SbfRegister.R2)
+        val r3 = Value.Reg(SbfRegister.R3)
 
         // Create abstract state
         val absVal = createMemoryDomain()
@@ -136,19 +145,19 @@ class MemoryMemcpyTest {
         g.doMemcpy(createMemcpy(), scalars)
         println("After memcpy(r1,r2,24) -> $g")
 
-        checkPointsToNode(g, r1, 0, 8, n1)
-        checkPointsToNode(g, r1, 8, 8, n2)
-        checkPointsToNode(g, r1, 16, 8, n3)
+        checkPointsToNode(g, r1, 0, 8, n1, scalars)
+        checkPointsToNode(g, r1, 8, 8, n2, scalars)
+        checkPointsToNode(g, r1, 16, 8, n3, scalars)
     }
 
     @Test
     fun test02() {
         println( "====== TEST 2: memcpy from (exact) non-stack to uninitialized stack (known length) =======")
 
-        val r10 = Value.Reg(SbfRegister.R10_STACK_POINTER)
-        val r1 = Value.Reg(SbfRegister.R1_ARG)
-        val r2 = Value.Reg(SbfRegister.R2_ARG)
-        val r3 = Value.Reg(SbfRegister.R3_ARG)
+        val r10 = Value.Reg(SbfRegister.R10)
+        val r1 = Value.Reg(SbfRegister.R1)
+        val r2 = Value.Reg(SbfRegister.R2)
+        val r3 = Value.Reg(SbfRegister.R3)
 
         // Create abstract state
         val absVal = createMemoryDomain()
@@ -178,19 +187,19 @@ class MemoryMemcpyTest {
         g.doMemcpy(createMemcpy(), scalars)
         println("After memcpy(r1,r2,24) -> $g")
 
-        checkPointsToNode(g, r1, 0, 8, n1)
-        checkPointsToNode(g, r1, 8, 8, n2)
-        checkPointsToNode(g, r1, 16, 8, n3)
+        checkPointsToNode(g, r1, 0, 8, n1, scalars)
+        checkPointsToNode(g, r1, 8, 8, n2, scalars)
+        checkPointsToNode(g, r1, 16, 8, n3, scalars)
     }
 
     @Test
     fun test03() {
         println( "====== TEST 3: memcpy from (exact) non-stack to (exact) uninitialized non-stack (known length) =======")
 
-        val r10 = Value.Reg(SbfRegister.R10_STACK_POINTER)
-        val r1 = Value.Reg(SbfRegister.R1_ARG)
-        val r2 = Value.Reg(SbfRegister.R2_ARG)
-        val r3 = Value.Reg(SbfRegister.R3_ARG)
+        val r10 = Value.Reg(SbfRegister.R10)
+        val r1 = Value.Reg(SbfRegister.R1)
+        val r2 = Value.Reg(SbfRegister.R2)
+        val r3 = Value.Reg(SbfRegister.R3)
 
         // Create abstract state
         val absVal = createMemoryDomain()
@@ -222,9 +231,9 @@ class MemoryMemcpyTest {
         println("After memcpy(r1,r2,24) -> $g")
 
         Assertions.assertEquals(true, !dstN.isUnaccessed())
-        checkPointsToNode(g, r1, 0, 8, n1)
-        checkPointsToNode(g, r1, 8, 8, n2)
-        checkPointsToNode(g, r1, 16, 8, n3)
+        checkPointsToNode(g, r1, 0, 8, n1, scalars)
+        checkPointsToNode(g, r1, 8, 8, n2, scalars)
+        checkPointsToNode(g, r1, 16, 8, n3, scalars)
     }
 
 
@@ -232,10 +241,10 @@ class MemoryMemcpyTest {
     fun test04() {
         println( "====== TEST 4: memcpy from stack to initialized stack (known length) =======")
 
-        val r10 = Value.Reg(SbfRegister.R10_STACK_POINTER)
-        val r1 = Value.Reg(SbfRegister.R1_ARG)
-        val r2 = Value.Reg(SbfRegister.R2_ARG)
-        val r3 = Value.Reg(SbfRegister.R3_ARG)
+        val r10 = Value.Reg(SbfRegister.R10)
+        val r1 = Value.Reg(SbfRegister.R1)
+        val r2 = Value.Reg(SbfRegister.R2)
+        val r3 = Value.Reg(SbfRegister.R3)
 
         // Create abstract state
         val absVal = createMemoryDomain()
@@ -274,19 +283,19 @@ class MemoryMemcpyTest {
         g.doMemcpy(createMemcpy(), scalars)
         println("After memcpy(r1,r2,24) -> $g")
 
-        checkPointsToNode(g, r1, 0, 8, n1)
-        checkPointsToNode(g, r1, 8, 8, n2)
-        checkPointsToNode(g, r1, 16, 8, n3)
+        checkPointsToNode(g, r1, 0, 8, n1, scalars)
+        checkPointsToNode(g, r1, 8, 8, n2, scalars)
+        checkPointsToNode(g, r1, 16, 8, n3, scalars)
     }
 
     @Test
     fun test05() {
         println( "====== TEST 5: memcpy from (exact) non-stack to initialized stack (known length) =======")
 
-        val r10 = Value.Reg(SbfRegister.R10_STACK_POINTER)
-        val r1 = Value.Reg(SbfRegister.R1_ARG)
-        val r2 = Value.Reg(SbfRegister.R2_ARG)
-        val r3 = Value.Reg(SbfRegister.R3_ARG)
+        val r10 = Value.Reg(SbfRegister.R10)
+        val r1 = Value.Reg(SbfRegister.R1)
+        val r2 = Value.Reg(SbfRegister.R2)
+        val r3 = Value.Reg(SbfRegister.R3)
 
         // Create abstract state
         val absVal = createMemoryDomain()
@@ -328,9 +337,9 @@ class MemoryMemcpyTest {
         g.doMemcpy(createMemcpy(), scalars)
         println("After memcpy(r1,r2,24) -> $g")
 
-        checkPointsToNode(g, r1, 0, 8, n1)
-        checkPointsToNode(g, r1, 8, 8, n2)
-        checkPointsToNode(g, r1, 16, 8, n3)
+        checkPointsToNode(g, r1, 0, 8, n1, scalars)
+        checkPointsToNode(g, r1, 8, 8, n2, scalars)
+        checkPointsToNode(g, r1, 16, 8, n3, scalars)
     }
 
 
@@ -338,10 +347,10 @@ class MemoryMemcpyTest {
     fun test06() {
         println( "====== TEST 6: memcpy from (exact) non-stack to (exact) initialized non-stack (known length) =======")
 
-        val r10 = Value.Reg(SbfRegister.R10_STACK_POINTER)
-        val r1 = Value.Reg(SbfRegister.R1_ARG)
-        val r2 = Value.Reg(SbfRegister.R2_ARG)
-        val r3 = Value.Reg(SbfRegister.R3_ARG)
+        val r10 = Value.Reg(SbfRegister.R10)
+        val r1 = Value.Reg(SbfRegister.R1)
+        val r2 = Value.Reg(SbfRegister.R2)
+        val r3 = Value.Reg(SbfRegister.R3)
 
         // Create abstract state
         val absVal = createMemoryDomain()
@@ -386,18 +395,18 @@ class MemoryMemcpyTest {
         println("After memcpy(r1,r2,24) -> $g")
 
         Assertions.assertEquals(true, !n4.getNode().isUnaccessed())
-        checkPointsToNode(g, r1, 0, 8, n1)
-        checkPointsToNode(g, r1, 8, 8, n2)
-        checkPointsToNode(g, r1, 16, 8, n3)
+        checkPointsToNode(g, r1, 0, 8, n1, scalars)
+        checkPointsToNode(g, r1, 8, 8, n2, scalars)
+        checkPointsToNode(g, r1, 16, 8, n3, scalars)
     }
 
     @Test
     fun test07() {
         println( "====== TEST 7: memcpy from (exact) non-stack to (exact) initialized non-stack (unknown length) =======")
 
-        val r10 = Value.Reg(SbfRegister.R10_STACK_POINTER)
-        val r1 = Value.Reg(SbfRegister.R1_ARG)
-        val r2 = Value.Reg(SbfRegister.R2_ARG)
+        val r10 = Value.Reg(SbfRegister.R10)
+        val r1 = Value.Reg(SbfRegister.R1)
+        val r2 = Value.Reg(SbfRegister.R2)
 
         // Create abstract state
         val absVal = createMemoryDomain()
@@ -435,7 +444,7 @@ class MemoryMemcpyTest {
         g.setRegCell(r1, dstN.createSymCell(0))
 
         val scalars = createScalarDomain()
-        val r3 = Value.Reg(SbfRegister.R3_ARG)
+        val r3 = Value.Reg(SbfRegister.R3)
         scalars.setScalarValue(r3, ScalarValue(sbfTypesFac.anyNum()))
         // memcpy(r1, r2, r3)
         println("Before memcpy(r1,r2,r3) with r3=top -> $g")
@@ -450,9 +459,9 @@ class MemoryMemcpyTest {
     fun test08() {
         println( "====== TEST 8: memcpy from (exact) non-stack to initialized stack (unknown length) =======")
 
-        val r10 = Value.Reg(SbfRegister.R10_STACK_POINTER)
-        val r1 = Value.Reg(SbfRegister.R1_ARG)
-        val r2 = Value.Reg(SbfRegister.R2_ARG)
+        val r10 = Value.Reg(SbfRegister.R10)
+        val r1 = Value.Reg(SbfRegister.R1)
+        val r2 = Value.Reg(SbfRegister.R2)
 
         // Create abstract state
         val absVal = createMemoryDomain()
@@ -509,10 +518,10 @@ class MemoryMemcpyTest {
          * ```
          */
 
-        val r10 = Value.Reg(SbfRegister.R10_STACK_POINTER)
-        val r1 = Value.Reg(SbfRegister.R1_ARG)
-        val r2 = Value.Reg(SbfRegister.R2_ARG)
-        val r3 = Value.Reg(SbfRegister.R3_ARG)
+        val r10 = Value.Reg(SbfRegister.R10)
+        val r1 = Value.Reg(SbfRegister.R1)
+        val r2 = Value.Reg(SbfRegister.R2)
+        val r3 = Value.Reg(SbfRegister.R3)
 
         // Create abstract state
         val absVal = createMemoryDomain()
@@ -570,9 +579,9 @@ class MemoryMemcpyTest {
 
         g.setRegCell(r1, stackC.getNode().createSymCell(PTAOffset(3040)))
         // getNode triggers "stack materialization"
-        val c5 = load(g, r1, 0, 8)
-        val c6 = load(g, r1, 8, 8)
-        val c7 = load(g, r1, 16, 8)
+        val c5 = load(g, r1, 0, 8, scalars)
+        val c6 = load(g, r1, 8, 8, scalars)
+        val c7 = load(g, r1, 16, 8, scalars)
 
         println("After stack materialization -> $g")
         Assertions.assertEquals(true,  c5 == c6 && c6 == c7 && c7 != null)
@@ -591,10 +600,10 @@ class MemoryMemcpyTest {
          * ```
          */
 
-        val r10 = Value.Reg(SbfRegister.R10_STACK_POINTER)
-        val r1 = Value.Reg(SbfRegister.R1_ARG)
-        val r2 = Value.Reg(SbfRegister.R2_ARG)
-        val r3 = Value.Reg(SbfRegister.R3_ARG)
+        val r10 = Value.Reg(SbfRegister.R10)
+        val r1 = Value.Reg(SbfRegister.R1)
+        val r2 = Value.Reg(SbfRegister.R2)
+        val r3 = Value.Reg(SbfRegister.R3)
 
         // Create abstract state
         val absVal = createMemoryDomain()
@@ -656,9 +665,9 @@ class MemoryMemcpyTest {
          * src = dst = SummarizedNode -> (0, n9)
          * ```
          **/
-        val r10 = Value.Reg(SbfRegister.R10_STACK_POINTER)
-        val r1 = Value.Reg(SbfRegister.R1_ARG)
-        val r2 = Value.Reg(SbfRegister.R2_ARG)
+        val r10 = Value.Reg(SbfRegister.R10)
+        val r1 = Value.Reg(SbfRegister.R1)
+        val r2 = Value.Reg(SbfRegister.R2)
 
         // Create abstract state
         val absVal = createMemoryDomain()
@@ -696,7 +705,7 @@ class MemoryMemcpyTest {
         g.setRegCell(r1, dstNode.createSymCell(0))
 
         val scalars = createScalarDomain()
-        val r3 = Value.Reg(SbfRegister.R3_ARG)
+        val r3 = Value.Reg(SbfRegister.R3)
         scalars.setScalarValue(r3, ScalarValue(sbfTypesFac.toNum(24UL)))
         // memcpy(r1, r2, 24)
         println("Before memcpy(r1,r2,24) -> $g")
@@ -723,10 +732,10 @@ class MemoryMemcpyTest {
          * allocate fresh memory for them
          */
 
-        val r10 = Value.Reg(SbfRegister.R10_STACK_POINTER)
-        val r1 = Value.Reg(SbfRegister.R1_ARG)
-        val r2 = Value.Reg(SbfRegister.R2_ARG)
-        val r3 = Value.Reg(SbfRegister.R3_ARG)
+        val r10 = Value.Reg(SbfRegister.R10)
+        val r1 = Value.Reg(SbfRegister.R1)
+        val r2 = Value.Reg(SbfRegister.R2)
+        val r3 = Value.Reg(SbfRegister.R3)
 
         val absVal = createMemoryDomain()
         val stackC = absVal.getRegCell(r10)
@@ -767,22 +776,24 @@ class MemoryMemcpyTest {
         g.doMemcpy(createMemcpy(), scalars)
         println( "After memcpy(r1,r2,24) -> $g")
 
-        checkPointsToNode(g, r1, 0, 8, n1)
-        checkPointsToNode(g, r1, 8, 8, n2)
-        checkPointsToNode(g, r1, 16, 8, n3)
+        checkPointsToNode(g, r1, 0, 8, n1, scalars)
+        checkPointsToNode(g, r1, 8, 8, n2, scalars)
+        checkPointsToNode(g, r1, 16, 8, n3, scalars)
 
         // Check that we kill *all* overlapping cells at the destination
         expectException<UnknownStackContentError> {
-            // (3036,8) was marked as top so the pointer domain should complain
-            load(g, r1, (-4L).toShort(), 8)
+            ConfigScope(ForgetOnUntrackedStackLoad, false).use {
+                // (3036,8) was marked as top so the pointer domain should complain
+                load(g, r1, (-4L).toShort(), 8, scalars)
+            }
         }
 
         // Check that there is fresh memory at (3052,8)
-        val x = load(g, r1, 12, 8)
+        val x = load(g, r1, 12, 8, scalars)
         Assertions.assertEquals(true, x != null && x.getNode().isUnaccessed())
 
         // Check that there is fresh memory at (3048,4)
-        val y = load(g, r1, 8, 4)
+        val y = load(g, r1, 8, 4, scalars)
         Assertions.assertEquals(true, y != null && y.getNode().isUnaccessed())
     }
 
@@ -800,10 +811,10 @@ class MemoryMemcpyTest {
          * ```
          */
 
-        val r10 = Value.Reg(SbfRegister.R10_STACK_POINTER)
-        val r1 = Value.Reg(SbfRegister.R1_ARG)
-        val r2 = Value.Reg(SbfRegister.R2_ARG)
-        val r3 = Value.Reg(SbfRegister.R3_ARG)
+        val r10 = Value.Reg(SbfRegister.R10)
+        val r1 = Value.Reg(SbfRegister.R1)
+        val r2 = Value.Reg(SbfRegister.R2)
+        val r3 = Value.Reg(SbfRegister.R3)
 
         // Create abstract state
         val absVal = createMemoryDomain()
@@ -842,13 +853,13 @@ class MemoryMemcpyTest {
         g.doMemcpy(createMemcpy(), scalars)
         println("After memcpy(r1,r2,24) -> $g")
 
-        Assertions.assertEquals(true, load(g, r1, 0, 8)?.getNode() == n1)
-        Assertions.assertEquals(true, load(g, r1, 8, 8)?.getNode() == n2)
-        Assertions.assertEquals(true, load(g, r1, 16, 8)?.getNode() == n3)
-        Assertions.assertEquals(true, load(g, r1, 24, 8)?.getNode() == n4)
+        Assertions.assertEquals(true, load(g, r1, 0, 8, scalars)?.getNode() == n1)
+        Assertions.assertEquals(true, load(g, r1, 8, 8, scalars)?.getNode() == n2)
+        Assertions.assertEquals(true, load(g, r1, 16, 8, scalars)?.getNode() == n3)
+        Assertions.assertEquals(true, load(g, r1, 24, 8, scalars)?.getNode() == n4)
         // memcpy cannot kill the content of r1-4 which corresponds to offset 0 and 8 bytes in dstNode
         // because the destination is not the stack and therefore we cannot perform a strong update.
-        val x = load(g, r1, -4, 8)
+        val x = load(g, r1, -4, 8, scalars)
         Assertions.assertEquals(true, x?.getNode() == n5)
     }
 
@@ -865,10 +876,10 @@ class MemoryMemcpyTest {
          * dst = [(3040,8) -> (n1,0), (3048,8) -> (n2,0), (3056,8) -> (n3,0)]
          * ```
          */
-        val r10 = Value.Reg(SbfRegister.R10_STACK_POINTER)
-        val r1 = Value.Reg(SbfRegister.R1_ARG)
-        val r2 = Value.Reg(SbfRegister.R2_ARG)
-        val r3 = Value.Reg(SbfRegister.R3_ARG)
+        val r10 = Value.Reg(SbfRegister.R10)
+        val r1 = Value.Reg(SbfRegister.R1)
+        val r2 = Value.Reg(SbfRegister.R2)
+        val r3 = Value.Reg(SbfRegister.R3)
 
         val absVal = createMemoryDomain()
         val stackC = absVal.getRegCell(r10)
@@ -910,17 +921,17 @@ class MemoryMemcpyTest {
         g.doMemcpy(createMemcpy(), scalars)
         println("After memcpy(r1,r2,24) -> $g")
 
-        checkPointsToNode(g, r1, 0, 8, n1)
-        checkPointsToNode(g, r1, 8, 8, n2)
-        checkPointsToNode(g, r1, 16, 8, n3)
+        checkPointsToNode(g, r1, 0, 8, n1, scalars)
+        checkPointsToNode(g, r1, 8, 8, n2, scalars)
+        checkPointsToNode(g, r1, 16, 8, n3, scalars)
 
         // (4036,8) shouldn't be copied, so we shouldn't have anything at (3036,8)
         // (4060,8) shouldn't be copied, so we shouldn't have anything at (3060,8)
         // Note that since we haven't then accessed to offsets (3036 and 3060), the first time we access we will get fresh nodes.
         // Thus, the pointer analysis won't complain unlike test12, but we can check that (3036,8) and (3060,8) points to unaccessed nodes.
-        val x = load(g, r1, (-4L).toShort(), 8) /* (3036,8) */
+        val x = load(g, r1, (-4L).toShort(), 8, scalars) /* (3036,8) */
         Assertions.assertEquals(true, x != null && x.getNode().isUnaccessed())
-        val y = load(g, r1, 20, 8)        /* (3060,8) */
+        val y = load(g, r1, 20, 8, scalars)        /* (3060,8) */
         Assertions.assertEquals(true, y != null && y.getNode().isUnaccessed())
 
     }
@@ -937,10 +948,10 @@ class MemoryMemcpyTest {
          * dst = [(3040,8) -> (n1,0), (4048,4) -> (n2,0), (4048,8) -> (n2,0), (4056,8) -> (n3,0)]
          * ```
          */
-        val r10 = Value.Reg(SbfRegister.R10_STACK_POINTER)
-        val r1 = Value.Reg(SbfRegister.R1_ARG)
-        val r2 = Value.Reg(SbfRegister.R2_ARG)
-        val r3 = Value.Reg(SbfRegister.R3_ARG)
+        val r10 = Value.Reg(SbfRegister.R10)
+        val r1 = Value.Reg(SbfRegister.R1)
+        val r2 = Value.Reg(SbfRegister.R2)
+        val r3 = Value.Reg(SbfRegister.R3)
 
         val absVal = createMemoryDomain()
         val stackC = absVal.getRegCell(r10)
@@ -981,10 +992,10 @@ class MemoryMemcpyTest {
         g.doMemcpy(createMemcpy(), scalars)
         println("After memcpy(r1,r2,24) -> $g")
 
-        checkPointsToNode(g, r1, 0, 8, n1)
-        checkPointsToNode(g, r1, 8, 8, n2)
-        checkPointsToNode(g, r1, 8, 4, n2)
-        checkPointsToNode(g, r1, 16, 8, n3)
+        checkPointsToNode(g, r1, 0, 8, n1, scalars)
+        checkPointsToNode(g, r1, 8, 8, n2, scalars)
+        checkPointsToNode(g, r1, 8, 4, n2, scalars)
+        checkPointsToNode(g, r1, 16, 8, n3, scalars)
     }
 
     /** Tests to show differences between load+store and memcpy **/
@@ -993,9 +1004,9 @@ class MemoryMemcpyTest {
     fun `load fails because it does not match store`() {
         println("====== TEST 16: used to compare with TEST 17  =======")
 
-        val r10 = Value.Reg(SbfRegister.R10_STACK_POINTER)
-        val r1 = Value.Reg(SbfRegister.R1_ARG)
-        val r2 = Value.Reg(SbfRegister.R2_ARG)
+        val r10 = Value.Reg(SbfRegister.R10)
+        val r1 = Value.Reg(SbfRegister.R1)
+        val r2 = Value.Reg(SbfRegister.R2)
 
         val absVal = createMemoryDomain()
         val stackC = absVal.getRegCell(r10)
@@ -1022,14 +1033,17 @@ class MemoryMemcpyTest {
 
         println("Initially: $g")
 
-        load(g, r2, 0, 8)
+        val scalars = createScalarDomain()
+        load(g, r2, 0, 8, scalars)
         store(g, r1, 4, 8)
         println("After *(u64*)(r1+4) = *(u64*)(r2): $g")
-        checkPointsToNode(g, r1, 4, 8, n1)
+        checkPointsToNode(g, r1, 4, 8, n1, scalars)
 
         expectException<UnknownStackContentError> {
-            // after the store we cannot read at r1+4 different from 8 bytes
-            load(g, r1, 4, 1)
+            ConfigScope(ForgetOnUntrackedStackLoad, false).use {
+                // after the store we cannot read at r1+4 different from 8 bytes
+                load(g, r1, 4, 1, scalars)
+            }
         }
     }
 
@@ -1041,10 +1055,10 @@ class MemoryMemcpyTest {
          * They transfer the same memory.
          * However, load+store is more restrictive about future accesses while memcpy is not.
          */
-        val r10 = Value.Reg(SbfRegister.R10_STACK_POINTER)
-        val r1 = Value.Reg(SbfRegister.R1_ARG)
-        val r2 = Value.Reg(SbfRegister.R2_ARG)
-        val r3 = Value.Reg(SbfRegister.R3_ARG)
+        val r10 = Value.Reg(SbfRegister.R10)
+        val r1 = Value.Reg(SbfRegister.R1)
+        val r2 = Value.Reg(SbfRegister.R2)
+        val r3 = Value.Reg(SbfRegister.R3)
 
         val absVal = createMemoryDomain()
         val stackC = absVal.getRegCell(r10)
@@ -1076,20 +1090,20 @@ class MemoryMemcpyTest {
         scalars.setScalarValue(r3, ScalarValue(sbfTypesFac.toNum(8UL)))
         g.doMemcpy(createMemcpy(), scalars)
         println("After memcpy(r1+4, r2, 8): $g")
-        checkPointsToNode(g, r1, 0, 8, n1)
+        checkPointsToNode(g, r1, 0, 8, n1, scalars)
 
         // after memcpy we can read at r1 different from 8 bytes
         // this won't produce a PTA error
-        load(g, r1, 0, 1)
+        load(g, r1, 0, 1, scalars)
     }
 
     @Test
     fun `load 1 byte from uninitialized memory and store it as 8 bytes (type widening in register spilling)`() {
         println("====== TEST 18 (used to compare with TEST 19) =======")
 
-        val r10 = Value.Reg(SbfRegister.R10_STACK_POINTER)
-        val r1 = Value.Reg(SbfRegister.R1_ARG)
-        val r2 = Value.Reg(SbfRegister.R2_ARG)
+        val r10 = Value.Reg(SbfRegister.R10)
+        val r1 = Value.Reg(SbfRegister.R1)
+        val r2 = Value.Reg(SbfRegister.R2)
 
         val absVal = createMemoryDomain()
         val stackC = absVal.getRegCell(r10)
@@ -1113,7 +1127,7 @@ class MemoryMemcpyTest {
         println("Initially: $g")
 
         // type widening: read 1 byte from stack and load it to a 64-bit register (r7) and write r7 (8 bytes) to stack again
-        load(g, r2, 0, 1)
+        load(g, r2, 0, 1, createScalarDomain())
         store(g, r1, 0, 8)
         println("After *(u64*)(r1) = *(u8*)(r2): $g")
 
@@ -1127,10 +1141,10 @@ class MemoryMemcpyTest {
         *  In test18, the load reads from uninitialized memory. Therefore, it will create a fresh cell at the load and then store it.
         *  In test19, memcpy is a non-op since there is no memory to transfer at the source.
         */
-        val r10 = Value.Reg(SbfRegister.R10_STACK_POINTER)
-        val r1 = Value.Reg(SbfRegister.R1_ARG)
-        val r2 = Value.Reg(SbfRegister.R2_ARG)
-        val r3 = Value.Reg(SbfRegister.R3_ARG)
+        val r10 = Value.Reg(SbfRegister.R10)
+        val r1 = Value.Reg(SbfRegister.R1)
+        val r2 = Value.Reg(SbfRegister.R2)
+        val r3 = Value.Reg(SbfRegister.R3)
 
         val absVal = createMemoryDomain()
         val stackC = absVal.getRegCell(r10)
@@ -1166,9 +1180,9 @@ class MemoryMemcpyTest {
     fun `load 2 bytes from initialized memory and store it as 8 bytes (type widening in register spilling)`() {
         println("====== TEST 20 (used to compare with TEST 21) =======")
 
-        val r10 = Value.Reg(SbfRegister.R10_STACK_POINTER)
-        val r1 = Value.Reg(SbfRegister.R1_ARG)
-        val r2 = Value.Reg(SbfRegister.R2_ARG)
+        val r10 = Value.Reg(SbfRegister.R10)
+        val r1 = Value.Reg(SbfRegister.R1)
+        val r2 = Value.Reg(SbfRegister.R2)
 
         val absVal = createMemoryDomain()
         val stackC = absVal.getRegCell(r10)
@@ -1198,7 +1212,7 @@ class MemoryMemcpyTest {
         println("Initially: $g")
 
         // type widening: read 2 byte from stack and load it to a 64-bit register (r7) and write r7 (8 bytes) to stack again
-        load(g, r2, 0, 2)
+        load(g, r2, 0, 2, createScalarDomain())
         store(g, r1, 0, 8)
         println("After *(u64*)(r1) = *(u16*)(r2): $g")
         Assertions.assertEquals(true,stackC.getNode().getSucc(PTAField(PTAOffset(3040), 8)) != null)
@@ -1212,10 +1226,10 @@ class MemoryMemcpyTest {
         *  In test18, the load reads from uninitialized memory. Therefore, it will create a fresh cell at the load and then store it.
         *  In test19, memcpy is a non-op since there is no memory to transfer at the source.
         */
-        val r10 = Value.Reg(SbfRegister.R10_STACK_POINTER)
-        val r1 = Value.Reg(SbfRegister.R1_ARG)
-        val r2 = Value.Reg(SbfRegister.R2_ARG)
-        val r3 = Value.Reg(SbfRegister.R3_ARG)
+        val r10 = Value.Reg(SbfRegister.R10)
+        val r1 = Value.Reg(SbfRegister.R1)
+        val r2 = Value.Reg(SbfRegister.R2)
+        val r3 = Value.Reg(SbfRegister.R3)
 
         val absVal = createMemoryDomain()
         val stackC = absVal.getRegCell(r10)

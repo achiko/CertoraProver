@@ -1,0 +1,8 @@
+{
+    "rules": {
+        "dispatch": "SUCCESS",
+        "concrete": "SUCCESS",
+        "dispatchStorage": "SUCCESS",
+        "concreteStorage": "SUCCESS"
+    }
+}

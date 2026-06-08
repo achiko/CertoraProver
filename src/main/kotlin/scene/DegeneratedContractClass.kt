@@ -110,5 +110,8 @@ object DegeneratedContractClass : IContractClass {
             degeneratedError()
         }
 
+    override val resolvedLinks: ResolvedLinks
+        get() = degeneratedError()
+
     private fun readResolve(): Any = DegeneratedContractClass
 }

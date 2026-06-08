@@ -232,7 +232,7 @@ object SymbolType : BufferType() {
             )
 
         override val annotationDesc: String
-            get() = "$newHandle := new Symbol handle from slice [$slice]"
+            get() = "$newHandle := new Symbol handle from slice summary [$slice]"
 
         override val mayWriteVars: List<TACSymbol.Var>
             get() = mustWriteVars
@@ -272,7 +272,7 @@ object SymbolType : BufferType() {
             )
 
         override val annotationDesc: String
-            get() = "$newHandle := new Symbol handle from slice [$strPtr, $len]"
+            get() = "$newHandle := new Symbol handle from string summary [$strPtr, $len]"
 
         override val mayWriteVars: List<TACSymbol.Var>
             get() = mustWriteVars

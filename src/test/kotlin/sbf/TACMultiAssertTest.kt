@@ -89,4 +89,33 @@ class TACMultiAssertTest {
             }
         }
     }
+
+    @Test
+    fun testEmptyAssertsReturnsSingleRule() {
+        val cfg = SbfTestDSL.makeCFG("testEmpty") {
+            bb(0) {
+                "CVT_nondet_u64"()
+                r1 = r0
+                assume(CondOp.LE(r1, 1000UL))
+                exit()
+            }
+        }
+
+        val tacProg = toTAC(cfg)
+        println("=== Original TAC ===\n${dumpTAC(tacProg)}")
+
+        ConfigScope(Config.MultiAssertCheck, true).use {
+            val rules = VerificationFlow.splitAsserts(
+                SolanaEncodedRule(
+                    rule = EcosystemAgnosticRule(
+                        ruleIdentifier = RuleIdentifier.freshIdentifier(tacProg.name),
+                        ruleType = SpecType.Single.FromUser.SpecFile,
+                    ),
+                    code = tacProg,
+                )
+            )
+            Assertions.assertEquals(1, rules.size)
+            Assertions.assertEquals(0, numberOfAsserts(rules.single().code))
+        }
+    }
 }

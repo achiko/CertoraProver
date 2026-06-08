@@ -1,0 +1,10 @@
+{
+    "rules": {
+        "envfreeFuncsStaticCheck": {
+            "SUCCESS": [
+                "canRevert(bool)"
+            ]
+        },
+        "verifyRevertRollsBackStateChanges": "SUCCESS"
+    }
+}

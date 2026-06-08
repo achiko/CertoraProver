@@ -504,6 +504,21 @@ class SymbolTableFiller(
                         ok
                     }
                 }
+                is CVLHookPattern.Event -> {
+                    hookPattern.eventParams.map {
+                        if(it.param !is VMParam.Named) {
+                            ok
+                        } else if(it.indexed) {
+                            symbolTable.registerParam(it.param, FromVMContext.HookValue, scope, range)
+                        } else {
+                            symbolTable.registerParam(it.param, FromVMContext.EventHookBinding, scope, range)
+                        }
+                    }.flattenToVoid().bind {
+                        symbolTable.registerCVLKeyword(
+                            CVLKeywords.executingContract, scope
+                        )
+                    }
+                }
                 is CVLHookPattern.Create -> symbolTable.registerParam(hookPattern.value, FromVMContext.HookValue, scope, range)
                 is CVLHookPattern.Opcode -> {
                     hookPattern.params.map {

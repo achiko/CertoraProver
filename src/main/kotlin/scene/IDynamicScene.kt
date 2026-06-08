@@ -129,6 +129,7 @@ interface IDynamicScene : IScene {
                 is CallGraphBuilder.CalledContract.SymbolicOutput,
                 is CallGraphBuilder.CalledContract.InternalFunctionSummaryOutput,
                 is CallGraphBuilder.CalledContract.Unresolved,
+                is CallGraphBuilder.CalledContract.UnresolvedImmutable,
                 is CallGraphBuilder.CalledContract.UnresolvedRead -> this
             }
         }

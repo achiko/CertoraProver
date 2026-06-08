@@ -127,7 +127,7 @@ class ScalarDomainTest {
         val b0 = cfg.getBlock(Label.Address(0))
         check (b0 != null)
         val addInst = b0.getLocatedInstructions().drop(1).first()
-        val type = regTypes.typeAtInstruction(addInst, SbfRegister.R1_ARG)
+        val type = regTypes.typeAtInstruction(addInst, SbfRegister.R1)
         Assertions.assertEquals(true, type is SbfType.NumType && type.value.toLongOrNull() == 5L)
     }
 
@@ -200,7 +200,7 @@ class ScalarDomainTest {
         val b0 = cfg.getBlock(Label.Address(0))
         check (b0 != null)
         val secondInst = b0.getLocatedInstructions().drop(1).first()
-        val secondType = regTypes.typeAtInstruction(secondInst, SbfRegister.R1_ARG)
+        val secondType = regTypes.typeAtInstruction(secondInst, SbfRegister.R1)
         println("$secondInst -> $secondType")
        // Assertions.assertEquals(true, secondType is SbfType.NumType && secondType.value.get() == 5L)
     }
@@ -228,7 +228,7 @@ class ScalarDomainTest {
         val b0 = cfg.getBlock(Label.Address(0))
         check (b0 != null)
         val secondInst = b0.getLocatedInstructions().drop(1).first()
-        val secondType = regTypes.typeAtInstruction(secondInst, SbfRegister.R1_ARG)
+        val secondType = regTypes.typeAtInstruction(secondInst, SbfRegister.R1)
         println("$secondInst -> $secondType")
         // Assertions.assertEquals(true, secondType is SbfType.NumType && secondType.value.get() == 5L)
     }
@@ -373,7 +373,7 @@ class ScalarDomainTest {
     @Test
     fun `callx is not supported`() {
 
-        val r1 = Value.Reg(SbfRegister.R1_ARG)
+        val r1 = Value.Reg(SbfRegister.R1)
         val cfg = MutableSbfCFG("test")
         val b0 = cfg.getOrInsertBlock(Label.Address(0))
         cfg.setEntry(b0)
@@ -395,10 +395,10 @@ class ScalarDomainTest {
      */
     @Test
     fun `basic memcpy_zext`() {
-        val r1 = Value.Reg(SbfRegister.R1_ARG)
-        val r2 = Value.Reg(SbfRegister.R2_ARG)
-        val r3 = Value.Reg(SbfRegister.R3_ARG)
-        val r10 = Value.Reg(SbfRegister.R10_STACK_POINTER)
+        val r1 = Value.Reg(SbfRegister.R1)
+        val r2 = Value.Reg(SbfRegister.R2)
+        val r3 = Value.Reg(SbfRegister.R3)
+        val r10 = Value.Reg(SbfRegister.R10)
         val cfg = MutableSbfCFG("test")
         val b1 = cfg.getOrInsertBlock(Label.Address(1))
         cfg.setEntry(b1)
@@ -436,8 +436,8 @@ class ScalarDomainTest {
      */
     @Test
     fun `store of positive number of 1 byte and load of 1 byte`() {
-        val r1 = Value.Reg(SbfRegister.R1_ARG)
-        val r10 = Value.Reg(SbfRegister.R10_STACK_POINTER)
+        val r1 = Value.Reg(SbfRegister.R1)
+        val r10 = Value.Reg(SbfRegister.R10)
         val cfg = MutableSbfCFG("test")
         val b1 = cfg.getOrInsertBlock(Label.Address(1))
         cfg.setEntry(b1)
@@ -468,8 +468,8 @@ class ScalarDomainTest {
      */
     @Test
     fun `store of negative number of 1 byte and load of 1 byte`() {
-        val r1 = Value.Reg(SbfRegister.R1_ARG)
-        val r10 = Value.Reg(SbfRegister.R10_STACK_POINTER)
+        val r1 = Value.Reg(SbfRegister.R1)
+        val r10 = Value.Reg(SbfRegister.R10)
         val cfg = MutableSbfCFG("test")
         val b1 = cfg.getOrInsertBlock(Label.Address(1))
         cfg.setEntry(b1)
@@ -502,8 +502,8 @@ class ScalarDomainTest {
      */
     @Test
     fun `store of negative number of 1 byte and load of 1 byte with signed extension`() {
-        val r1 = Value.Reg(SbfRegister.R1_ARG)
-        val r10 = Value.Reg(SbfRegister.R10_STACK_POINTER)
+        val r1 = Value.Reg(SbfRegister.R1)
+        val r10 = Value.Reg(SbfRegister.R10)
         val cfg = MutableSbfCFG("test")
         val b1 = cfg.getOrInsertBlock(Label.Address(1))
         cfg.setEntry(b1)
@@ -538,10 +538,10 @@ class ScalarDomainTest {
      */
     @Test
     fun `basic memcpy_zext with negative number`() {
-        val r1 = Value.Reg(SbfRegister.R1_ARG)
-        val r2 = Value.Reg(SbfRegister.R2_ARG)
-        val r3 = Value.Reg(SbfRegister.R3_ARG)
-        val r10 = Value.Reg(SbfRegister.R10_STACK_POINTER)
+        val r1 = Value.Reg(SbfRegister.R1)
+        val r2 = Value.Reg(SbfRegister.R2)
+        val r3 = Value.Reg(SbfRegister.R3)
+        val r10 = Value.Reg(SbfRegister.R10)
         val cfg = MutableSbfCFG("test")
         val b1 = cfg.getOrInsertBlock(Label.Address(1))
         cfg.setEntry(b1)
@@ -585,7 +585,7 @@ class ScalarDomainTest {
     @Test
     fun `narrowing store of non-negative number with memcpy promotion`() {
         val cfg = `narrowing store`(5UL, 5UL)
-        promoteStoresToMemcpy(cfg, globals, memSummaries)
+        promoteMemcpy(cfg, globals, memSummaries)
         removeUselessDefinitions(cfg)
         println("$cfg")
 
@@ -609,7 +609,7 @@ class ScalarDomainTest {
     @Test
     fun `narrowing store of negative number with memcpy promotion`() {
         val cfg = `narrowing store`((-5).toULong(), 65531UL)
-        promoteStoresToMemcpy(cfg, globals, memSummaries)
+        promoteMemcpy(cfg, globals, memSummaries)
         removeUselessDefinitions(cfg)
         println("$cfg")
 
@@ -631,10 +631,10 @@ class ScalarDomainTest {
      * assert(r2 == assertedVal)
      */
     private fun `narrowing store`(storedVal: ULong, assertedVal: ULong): MutableSbfCFG {
-        val r0 = Value.Reg(SbfRegister.R0_RETURN_VALUE)
-        val r1 = Value.Reg(SbfRegister.R1_ARG)
-        val r2 = Value.Reg(SbfRegister.R2_ARG)
-        val r10 = Value.Reg(SbfRegister.R10_STACK_POINTER)
+        val r0 = Value.Reg(SbfRegister.R0)
+        val r1 = Value.Reg(SbfRegister.R1)
+        val r2 = Value.Reg(SbfRegister.R2)
+        val r10 = Value.Reg(SbfRegister.R10)
         val cfg = MutableSbfCFG("test")
         val b1 = cfg.getOrInsertBlock(Label.Address(1))
         cfg.setEntry(b1)
@@ -652,5 +652,87 @@ class ScalarDomainTest {
 
         println("$cfg")
         return cfg
+    }
+
+    @Test
+    fun `inRange returns only overlapping entries`() {
+        println("====== TEST: StackEnvironment.inRange =======")
+        fun mkVal(n: Long) = ScalarValue(SbfType.NumType<Constant, Constant>(Constant(n)))
+
+        // Query range: [0, 16)
+        val start = 0L
+        val len   = 16L
+
+        // Build an environment with entries at various positions relative to [0, 16):
+        //
+        //  offset=-100, width=8  → [-100,-92):  far before,                    NO overlap
+        //  offset=  -8, width=8  → [-8,   0):   ends exactly at 0 (not >0),    NO overlap
+        //  offset=  -7, width=8  → [-7,   1):   crosses left  boundary,        PARTIAL overlap
+        //  offset=   0, width=8  → [0,    8):   fully contained in [0,16),     FULL overlap (not partial)
+        //  offset=   8, width=8  → [8,   16):   fully contained in [0,16),     FULL overlap (not partial)
+        //  offset=  12, width=8  → [12,  20):   crosses right boundary,        PARTIAL overlap
+        //  offset=  16, width=8  → [16,  24):   starts exactly at 16 (= end),  NO overlap
+        //  offset= 100, width=8  → [100,108):   far after,                     NO overlap
+        var e = StackEnvironment.makeTop<ScalarValue<Constant, Constant>>()
+        e = e.put(ByteRange(-100L, 8), mkVal(-100))
+        e = e.put(ByteRange(  -8L, 8), mkVal(-8))
+        e = e.put(ByteRange(  -7L, 8), mkVal(-7))
+        e = e.put(ByteRange(   0L, 8), mkVal(0))
+        e = e.put(ByteRange(   8L, 8), mkVal(8))
+        e = e.put(ByteRange(  12L, 8), mkVal(12))
+        e = e.put(ByteRange(  16L, 8), mkVal(16))
+        e = e.put(ByteRange( 100L, 8), mkVal(100))
+
+        // onlyPartial=false: all entries that overlap in any way
+        val anyOverlap = e.inRange(start, len, onlyPartial = false)
+        Assertions.assertEquals(
+            setOf(ByteRange(-7L, 8), ByteRange(0L, 8), ByteRange(8L, 8), ByteRange(12L, 8)),
+            anyOverlap.keys
+        )
+
+        // onlyPartial=true: only entries that partially overlap (i.e. not fully contained in [0,16))
+        val partialOnly = e.inRange(start, len, onlyPartial = true)
+        Assertions.assertEquals(
+            setOf(ByteRange(-7L, 8), ByteRange(12L, 8)),
+            partialOnly.keys
+        )
+    }
+
+    @Test
+    fun `removeAbove removes only entries with offset strictly greater than threshold`() {
+        println("====== TEST: StackEnvironment.removeAbove =======")
+        fun mkVal(n: Long) = ScalarValue(SbfType.NumType<Constant, Constant>(Constant(n)))
+
+        val threshold = 0L
+        var e = StackEnvironment.makeTop<ScalarValue<Constant, Constant>>()
+        e = e.put(ByteRange(-8L, 8), mkVal(-8))   // offset < threshold: kept
+        e = e.put(ByteRange( 0L, 8), mkVal(0))    // offset = threshold: kept
+        e = e.put(ByteRange( 8L, 8), mkVal(8))    // offset > threshold: removed
+        e = e.put(ByteRange(16L, 8), mkVal(16))   // offset > threshold: removed
+
+        val result = e.removeAbove(threshold)
+        Assertions.assertEquals(
+            setOf(ByteRange(-8L, 8), ByteRange(0L, 8)),
+            result.map { it.key }.toSet()
+        )
+    }
+
+    @Test
+    fun `removeBelow removes only entries with offset strictly less than threshold`() {
+        println("====== TEST: StackEnvironment.removeBelow =======")
+        fun mkVal(n: Long) = ScalarValue(SbfType.NumType<Constant, Constant>(Constant(n)))
+
+        val threshold = 0L
+        var e = StackEnvironment.makeTop<ScalarValue<Constant, Constant>>()
+        e = e.put(ByteRange(-16L, 8), mkVal(-16))  // offset < threshold: removed
+        e = e.put(ByteRange( -8L, 8), mkVal(-8))   // offset < threshold: removed
+        e = e.put(ByteRange(  0L, 8), mkVal(0))    // offset = threshold: kept
+        e = e.put(ByteRange(  8L, 8), mkVal(8))    // offset > threshold: kept
+
+        val result = e.removeBelow(threshold)
+        Assertions.assertEquals(
+            setOf(ByteRange(0L, 8), ByteRange(8L, 8)),
+            result.map { it.key }.toSet()
+        )
     }
 }

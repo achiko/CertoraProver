@@ -25,6 +25,7 @@ import datastructures.*
 import datastructures.stdcollections.*
 import move.analysis.*
 import move.MoveModule.*
+import tac.*
 import utils.*
 import vc.data.*
 
@@ -43,7 +44,12 @@ data class InvokerCall(
     override fun transformSymbols(f: (TACSymbol.Var) -> TACSymbol.Var) = copy(invokerArgs = invokerArgs.map(f))
 
     context(SummarizationContext)
-    private fun materialize(callPtr: CmdPointer, patch: PatchingTACProgram<TACCmd>, def: MoveDefAnalysis) {
+    private fun materialize(
+        callPtr: CmdPointer,
+        patch: PatchingTACProgram<TACCmd>,
+        def: MoveDefAnalysis,
+        meta: MetaMap
+    ) {
         // Find the constant ID of the target function for this invoker call
         val targetId = def.mustBeConstantAt(callPtr, invokerArgs[0])?.intValueExact()
             ?: throw CertoraException(
@@ -86,8 +92,25 @@ data class InvokerCall(
                 }
                 invokerArg
             } else {
+                // Make a new nondet value for the arg
                 val havocArg = TACKeyword.TMP(targetParamType.toTag())
-                preamble += targetParamType.assignHavoc(havocArg)
+                preamble += when (targetParamType) {
+                    is MoveType.Value -> targetParamType.assignHavoc(havocArg)
+                    is MoveType.Reference -> {
+                        // If the target parameter is a reference, but we don't have an invoker argument of the same
+                        // type, we don't have a sound way to create a nondet reference.  We can create a new location,
+                        // but this excludes the possiblity that the reference refers to an existing location, which may
+                        // eliminate valid counterexamples.  We allow this for legacy reasons, but issue a warning.
+                        targetParamType.assignUnsoundHavoc(
+                            dest = havocArg,
+                            warning =
+                                "Target function ${target.name} has a reference-typed parameter $targetParamType with " +
+                                "no corresponding invoker parameter in $invokerName.  Generating a reference to a new " +
+                                "location may be unsound.  Consider adding this argument to the invoker.",
+                            jumpToDefinition = meta[META_INFO_KEY]?.getSourceDetails()
+                        )
+                    }
+                }
                 havocArg
             }
         }
@@ -110,14 +133,14 @@ data class InvokerCall(
         context(SummarizationContext)
         fun materialize(code: MoveTACProgram): MoveTACProgram {
             val calls = code.graph.commands.mapNotNull { (ptr, cmd) ->
-                ptr `to?` (cmd as? TACCmd.Simple.SummaryCmd)?.summ as? InvokerCall
+                ((cmd as? TACCmd.Simple.SummaryCmd)?.summ as? InvokerCall)?.let { Triple(ptr, it, cmd.meta) }
             }.toList()
             if (calls.isEmpty()) {
                 return code
             }
             val patch = code.toPatchingProgram()
-            calls.forEach { (ptr, call) ->
-                call.materialize(ptr, patch, code.graph.cache.def)
+            calls.forEach { (ptr, call, meta) ->
+                call.materialize(ptr, patch, code.graph.cache.def, meta)
             }
             return patch.toCode(code)
         }

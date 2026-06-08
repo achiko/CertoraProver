@@ -186,7 +186,8 @@ class TraceEquivalenceChecker<I>(
                             rule = equivalenceRule,
                             res = res,
                             scene = scene,
-                            origProgWithAssertIdMeta = origProgWithAssertIdMeta,
+                            optimizedProgram = origProgWithAssertIdMeta,
+                            unoptimizedProgram = null,
                             callResolutionTableFactory = CallResolutionTable.Factory(
                                 theRule.code,
                                 scene,

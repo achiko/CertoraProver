@@ -22,8 +22,15 @@ import algorithms.transitiveClosure
 import bridge.getContractsExtendedBy
 import com.certora.collect.*
 import datastructures.stdcollections.*
+import spec.CastType
 import spec.cvlast.*
 import spec.cvlast.EVMBuiltinTypes.method
+import spec.cvlast.typedescriptors.ToVMContext
+import spec.cvlast.typedescriptors.VMArrayTypeDescriptor
+import spec.cvlast.typedescriptors.VMMappingDescriptor
+import spec.cvlast.typedescriptors.VMStaticArrayType
+import spec.cvlast.typedescriptors.VMStructDescriptor
+import spec.cvlast.typedescriptors.VMTypeDescriptor
 import spec.rules.*
 import utils.*
 import utils.CollectingResult.Companion.asError
@@ -91,6 +98,7 @@ class CVLAstTypeChecker(
         val definitions = collectAndFilter(typeCheckDefinitions(ast.definitions))
         val hooks = collectAndFilter(typeCheckHooks(ast.hooks))
         val importedContracts = collectAndFilter(typeCheckImportedContracts(ast.importedContracts))
+        val linkEntries = collectAndFilter(typeCheckLinkEntries(ast.linkEntries, ast.importedContracts, ast.scope))
         val importedSpecFiles = collectAndFilter(typeCheckImportedSpecFiles(ast.importedSpecFiles))
         check(ast.overrideDeclarations.allDecls.isEmpty()) {
             "All override declarations should have been merged into the ast.definitions/functions while dealing with the imports"
@@ -149,7 +157,8 @@ class CVLAstTypeChecker(
                 importedContracts,
                 importedSpecFiles,
                 ast.overrideDeclarations, // this is empty, remember?
-                bind(typeCheckScope(ast.scope))
+                bind(typeCheckScope(ast.scope)),
+                linkEntries = linkEntries
             )
     }
 
@@ -258,6 +267,176 @@ class CVLAstTypeChecker(
                 AliasingExtensionContract(impContract, baseContracts.map { it.name }).asError()
             } else {
                 impContract.lift()
+            }
+        }
+    }
+
+    private fun typeCheckLinkEntries(
+        linkEntries: List<CVLLinkEntryBase>,
+        importedContracts: List<CVLImportedContract>,
+        scope: CVLScope
+    ): List<CollectingResult<CVLLinkEntry, CVLError>> {
+        val aliasToContractName = importedContracts.associate { it.alias to it.solidityContractName }
+
+        // Check for duplicate entries (same contract + field path linked more than once).
+        // Resolve aliases to contract names so that different aliases for the same contract are caught.
+        val seen = mutableMapOf<Pair<SolidityContract, List<CVLLinkPathSegment>>, CVLLinkEntryBase>()
+        val duplicates = mutableSetOf<CVLLinkEntryBase>()
+        for (entry in linkEntries) {
+            val contract = aliasToContractName[entry.sourceContractAlias] ?: continue
+            val key = contract to entry.fieldPath
+            val prev = seen.putIfAbsent(key, entry)
+            if (prev != null) {
+                duplicates.add(entry)
+            }
+        }
+
+        return linkEntries.map { entry ->
+            collectingErrors {
+                fun linkError(msg: String): Nothing =
+                    returnError(LinksBlockError(entry.range, msg))
+
+                if (entry in duplicates) {
+                    val contract = aliasToContractName.getValue(entry.sourceContractAlias)
+                    val prev = seen.getValue(contract to entry.fieldPath)
+                    linkError("Duplicate link entry for '${entry.pathString}' (previously defined at ${prev.range})")
+                }
+
+                if (entry.fieldPath.isEmpty()) {
+                    linkError("Link path must specify at least one field (e.g. `a.field => b`)")
+                }
+                val hasIndex = entry.fieldPath.any { it is CVLLinkPathSegment.UncheckedIndex }
+                val hasWildcard = entry.fieldPath.any { it is CVLLinkPathSegment.Wildcard }
+                if (hasIndex && hasWildcard) {
+                    linkError(
+                        "Cannot mix concrete indices and wildcards in link paths (e.g., 'a[0][_]'). " +
+                            "All indices must be the same kind."
+                    )
+                }
+                if (entry.sourceContractAlias !in aliasToContractName) {
+                    linkError("Link source `${entry.sourceContractAlias}` is not a declared contract alias")
+                }
+                val badTargets = entry.targets.filter { it !in aliasToContractName }
+                if (badTargets.isNotEmpty()) {
+                    val plural = badTargets.size > 1
+                    linkError(
+                        "Link target${if (plural) { "s" } else { "" }} " +
+                            "${badTargets.joinToString(", ") { "`$it`" }} " +
+                            "not declared as contract alias${if (plural) { "es" } else { "" }}. " +
+                            "Did you mean to add: " +
+                            badTargets.joinToString("; ") { "`using <Contract> as $it`" } + "?"
+                    )
+                }
+
+                // Validate field path against storage types via symbol table
+                val contractName = aliasToContractName[entry.sourceContractAlias]!!
+                val contractScope = symbolTable.getContractScope(contractName) ?: error("Contract $contractName not found in scope")
+                val first = entry.fieldPath.first() as? CVLLinkPathSegment.Field
+                    ?: linkError("Link path must start with a field name (e.g. `a.field`, not `a[0]` or `a[_]`)")
+                val symbolInfo = symbolTable.lookUpNonFunctionLikeSymbol(first.name, contractScope)
+                val type: VMTypeDescriptor = when (symbolInfo) {
+                    is CVLSymbolTable.SymbolInfo.ContractStorageType -> symbolInfo.storageType
+                    is CVLSymbolTable.SymbolInfo.ContractImmutableType -> {
+                        if (entry.fieldPath.size > 1) {
+                            linkError("Immutable '${first.name}' cannot have nested field or index access in link paths")
+                        }
+                        symbolInfo.immutableType
+                    }
+                    else -> linkError(
+                        "Field '${first.name}' not found in storage or immutables of contract ${contractName.name}. " +
+                            "This can happen when the compiler does not provide storage layout information " +
+                            "(e.g., solc versions before 0.6.5)."
+                    )
+                }
+                var currentType = type
+                val typeEnv = CVLTypeEnvironment.empty(entry.range, scope)
+                val typeCheckedPath = buildList<CVLLinkPathSegment.Resolved> {
+                    for (segment in entry.fieldPath.drop(1)) {
+                        when (segment) {
+                            is CVLLinkPathSegment.Field -> {
+                                val struct = currentType as? VMStructDescriptor
+                                    ?: linkError("Cannot access field '${segment.name}' on non-struct type ${currentType.prettyPrint()}")
+                                currentType = struct.fieldTypes[segment.name]
+                                    ?: linkError("Field '${segment.name}' not found in struct ${currentType.prettyPrint()}")
+                                add(segment)
+                            }
+                            is CVLLinkPathSegment.UncheckedIndex -> {
+                                val typeCheckedExpr = bind(expTypeChecker.typeCheck(segment.expr, typeEnv))
+                                val exprType = typeCheckedExpr.getOrInferPureCVLType()
+
+                                // Validate and convert to LinkIndexValue
+                                val indexValue = when {
+                                    typeCheckedExpr is CVLExp.Constant.NumberLit ->
+                                        LinkIndexValue.NumericLiteral(typeCheckedExpr.n)
+
+                                    typeCheckedExpr is CVLExp.CastExpr
+                                        && typeCheckedExpr.castType == CastType.TO
+                                        && typeCheckedExpr.toCastType is CVLType.PureCVLType.Primitive.BytesK
+                                        && typeCheckedExpr.arg is CVLExp.Constant.NumberLit -> {
+                                        val k = typeCheckedExpr.toCastType.k
+                                        LinkIndexValue.BytesLiteral(k, typeCheckedExpr.arg.n)
+                                    }
+
+                                    typeCheckedExpr is CVLExp.VariableExp
+                                        && typeCheckedExpr.id in aliasToContractName ->
+                                        LinkIndexValue.ContractRef(typeCheckedExpr.id)
+
+                                    else -> linkError(
+                                        "Link path index must be a number literal, to_bytesK(number), or a contract alias, " +
+                                            "but got: $typeCheckedExpr"
+                                    )
+                                }
+
+                                when (val t = currentType) {
+                                    is VMArrayTypeDescriptor -> {
+                                        if (!(exprType isSubtypeOf CVLType.PureCVLType.Primitive.UIntK(256))) {
+                                            linkError(
+                                                "Link path index must be of type uint256 or a compatible subtype, " +
+                                                    "but got $exprType"
+                                            )
+                                        }
+                                        if (t is VMStaticArrayType && indexValue is LinkIndexValue.NumericLiteral) {
+                                            if (indexValue.value >= t.numElements) {
+                                                linkError(
+                                                    "Index ${indexValue.value} is out of bounds for static array " +
+                                                        "of size ${t.numElements}"
+                                                )
+                                            }
+                                        }
+                                        currentType = t.elementType
+                                    }
+                                    is VMMappingDescriptor -> {
+                                        if (!(exprType.convertibleToVMType(t.keyType, ToVMContext.MappingKey).isResult())) {
+                                            linkError("Link mapping index must be a ${t.keyType} or a compatible subtype")
+                                        }
+                                        currentType = t.valueType
+                                    }
+                                    else -> linkError("Cannot index into type ${currentType.prettyPrint()} (expected array or mapping)")
+                                }
+
+                                add(CVLLinkPathSegment.Index(indexValue))
+                            }
+                            is CVLLinkPathSegment.Index -> {
+                                error("Unexpected already-checked Index before typechecking")
+                            }
+                            is CVLLinkPathSegment.Wildcard -> {
+                                when (val t = currentType) {
+                                    is VMArrayTypeDescriptor -> { currentType = t.elementType }
+                                    is VMMappingDescriptor -> { currentType = t.valueType }
+                                    else -> linkError("Cannot use wildcard on type ${currentType.prettyPrint()} (expected array or mapping)")
+                                }
+                                add(segment)
+                            }
+                        }
+                    }
+                }
+                CVLLinkEntry(
+                    sourceContractAlias = entry.sourceContractAlias,
+                    fieldPath = listOf(entry.fieldPath.first() as CVLLinkPathSegment.Field) + typeCheckedPath,
+                    targets = entry.targets,
+                    isImmutable = symbolInfo is CVLSymbolTable.SymbolInfo.ContractImmutableType,
+                    range = entry.range
+                )
             }
         }
     }

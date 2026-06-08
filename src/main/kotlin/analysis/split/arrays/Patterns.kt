@@ -143,7 +143,7 @@ class Patterns(splitContext: SplitContext) {
             )
 
             /** final store pattern - this is the combined slot to be stored */
-            storedSlot = (remainder bwOr shiftedVal)
+            storedSlot = OR(remainder bwOr shiftedVal, remainder.andDo { set(CONST_VALUE, 0.toBigInteger()) })
                 .onlyIf { // if we are writing a constant, check it's not too large
                     val c = get(CONST_VALUE)
                     c == null || c.bitLength() <= get(BITWIDTH)!!

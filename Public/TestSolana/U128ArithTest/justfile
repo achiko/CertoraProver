@@ -4,11 +4,21 @@
 # This script is only used to update the .so file when needed. The test itself
 # does not call `cargo certora-sbf`
 
-export EXECUTABLE_PATH := "./target/sbf-solana-solana/release/u128_arith.so"
+export ARCH := env_var_or_default("ARCH", "")
+
+export EXECUTABLE_PATH := if ARCH == "v1" {
+    "./target/sbpfv1-solana-solana/release/u128_arith.so"
+} else {
+    "./target/sbf-solana-solana/release/u128_arith.so"
+}
+
+_arch_flag := if ARCH == "v1" { "--arch v1" } else { "" }
+_tools_version := if ARCH == "v1" { "v1.46" } else { "v1.43" }
+_output_name := if ARCH == "v1" { "u128_arith.sbpfv1.so" } else { "u128_arith.so" }
 
 build-sbf:
-    cargo certora-sbf --tools-version v1.43
-    cp $EXECUTABLE_PATH .
+    cargo certora-sbf --tools-version {{ _tools_version }} {{ _arch_flag }}
+    cp $EXECUTABLE_PATH {{ _output_name }}
     rm -Rf target
 
 # java executable
@@ -20,7 +30,7 @@ export SANITY_CHECKS := env_var_or_default("SANITY_CHECKS", "none")
 
 inliner_cfg := "../cvlr_inlining.txt"
 summaries_cfg := "../cvlr_summaries.txt"
-sbf_file := "../u128_arith.so"
+sbf_file := if ARCH == "v1" { "../u128_arith.sbpfv1.so" } else { "../u128_arith.so" }
 
 # location of prover jar
 emv_jar := "$CERTORA/emv.jar"
@@ -36,14 +46,8 @@ verify RULE *OPTS: # build-sbf
 		{{ sbf_file }} \
 		-solanaInlining {{ inliner_cfg }} \
 		-solanaSummaries {{ summaries_cfg }} \
-		-solanaOptimisticJoin true \
-		-solanaOptimisticOverlaps true \
-		-solanaOptimisticMemcpyPromotion true \
-		-solanaOptimisticMemcmp true \
-		-solanaOptimisticNoMemmove true \
 		-solanaPrintDevMsg true \
 		-solanaPrintAnalyzedToDot \
-		-solanaTACMathInt true \
 		-solanaTACOptimize ${TAC_OPT_LEVEL} \
 		-ruleSanityChecks ${SANITY_CHECKS} \
 		-rule {{ RULE }} \
