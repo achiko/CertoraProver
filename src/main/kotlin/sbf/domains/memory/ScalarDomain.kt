@@ -47,11 +47,22 @@ import org.jetbrains.annotations.TestOnly
  *    the stack. The analysis optimistically assumes that if the destination is "top" then it doesn't affect the stack.
  *    Note that this assumption is reasonable due to two main reasons: (a) we prove separately that stack pointers do
  *    not escape and (b) it is reasonable to assume that uninitialized/external memory does not contain stack pointers.
+ *
+ * ## Regarding errors ##
+ *
+ * The scalar domain throws exceptions in two distinct categories:
+ *
+ * 1. **Internal errors** — should never happen at runtime. These signal a bug in the analysis itself
+ *    (e.g. invariants broken, unreachable code reached). Examples: [SolanaError], [ScalarDomainError].
+ *
+ * 2. **Expected limitations** — situations the scalar analysis is intentionally not designed to handle
+ *    (e.g. statically unknown stack offsets, unknown `memcpy` lengths). These are recoverable: callers
+ *    typically catch them and fall back to a more conservative analysis or report a user-facing error.
+ *    Examples: [UnknownStackPointerError], [UnknownMemcpyLenError].
  */
 
 
 private val logger = Logger(LoggerTypes.SBF_SCALAR_ANALYSIS)
-private fun dbg(msg: () -> Any) { logger.info(msg)}
 
 private class ValueFactory<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>>(
     val sbfTypeFac: ISbfTypeFactory<TNum, TOffset>): IScalarValueFactory<ScalarValue<TNum, TOffset>> {
@@ -169,8 +180,7 @@ class ScalarDomain<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>> private con
     val globalState: GlobalState
 ) : MutableAbstractDomain<ScalarDomain<TNum, TOffset>>,
     ScalarValueProvider<TNum, TOffset>,
-    MutableScalarValueUpdater<TNum, TOffset>,
-    MemoryDomainScalarOps<TNum, TOffset> {
+    MutableScalarValueUpdater<TNum, TOffset> {
 
     constructor(
         sbfTypeFac: ISbfTypeFactory<TNum, TOffset>,
@@ -268,7 +278,7 @@ class ScalarDomain<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>> private con
 
         val offset = (value.type() as? SbfType.PointerType.Stack<TNum, TOffset>)?.offset ?: return
         if (offset.isBottom()) {
-            throw SolanaError("Stack offset is bottom and this is unexpected")
+            throw SolanaError("Scalar domain: stack offset is bottom")
         }
         if (!offset.isTop()) {
             offset.toLongList().forEach { o ->
@@ -545,11 +555,11 @@ class ScalarDomain<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>> private con
             is SbfType.PointerType -> {
                 if (!ptrType.samePointerType(operandType)) {
                     throw ScalarDomainError(
-                        "cannot mix pointer from different memory regions ($ptrType and $operandType)"
+                        "cannot mix pointers from different memory regions ($ptrType and $operandType) in $inst"
                     )
                 }
                 if (op != BinOp.SUB) {
-                    throw ScalarDomainError("Unexpected pointer arithmetic in $inst")
+                    throw ScalarDomainError("unexpected pointer arithmetic in $inst")
                 }
 
                 // subtraction of pointers of the same type is okay
@@ -755,7 +765,7 @@ class ScalarDomain<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>> private con
                 DevErrorInfo(
                     locInst,
                     PtrExprErrReg(lenReg),
-                    "Statically unknown length in $lenReg"
+                    "Scalar domain: statically unknown length in $lenReg at ${locInst.inst}"
                 )
             )
 
@@ -771,7 +781,7 @@ class ScalarDomain<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>> private con
                 DevErrorInfo(
                     locInst,
                     PtrExprErrReg(reg),
-                    "Statically unknown stack offset $reg"
+                    "Scalar domain: statically unknown stack offset in $reg at ${locInst.inst}"
                 )
             )
         }
@@ -1364,7 +1374,10 @@ class ScalarDomain<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>> private con
     }
 
     override fun getAsScalarValueWithNumToPtrCast(reg: Value.Reg): ScalarValue<TNum, TOffset> {
-        check(!isBottom()) {"getAsScalarValueWithNumToPtrCast cannot be called on bottom"}
+        if (isBottom()) {
+            return ScalarValue(sbfTypeFac.mkBottom())
+        }
+
         val scalarVal = getRegister(reg)
         val type = scalarVal.type()
         if (type is SbfType.NumType) {
@@ -1395,13 +1408,17 @@ class ScalarDomain<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>> private con
         val baseType = baseScalarVal.type()
         checkStackInBounds(baseType, locInst)
         val loadedAsNumForPTA = inst.metaData.getVal(SbfMeta.LOADED_AS_NUM_FOR_PTA) != null
+        // SBF pointers are 64-bit, so a load narrower than 8 bytes cannot read a
+        // pointer — the loaded register is necessarily numeric. Folded into the
+        // existing PTA-metadata flag so all the arms below pick up both reasons.
+        val mustBeNum = loadedAsNumForPTA || width < 8
         when (baseType) {
             is SbfType.Bottom -> {}
-            is SbfType.Top -> forgetOrNum(lhs, loadedAsNumForPTA)
+            is SbfType.Top -> forgetOrNum(lhs, mustBeNum)
             is SbfType.NumType -> {
                 // Before GlobalInferenceAnalysis is run, it's totally possible to de-reference
                 // an absolute address that it's actually a global variable, but we don't know yet.
-                forgetOrNum(lhs, loadedAsNumForPTA)
+                forgetOrNum(lhs, mustBeNum)
             }
             is SbfType.PointerType -> {
                 when (baseType) {
@@ -1410,7 +1427,7 @@ class ScalarDomain<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>> private con
                         val stackTOffsets = baseType.offset.add(offset.toLong())
                         check(!stackTOffsets.isBottom())
                         if (stackTOffsets.isTop()) {
-                            forgetOrNum(lhs, loadedAsNumForPTA)
+                            forgetOrNum(lhs, mustBeNum)
                         } else {
                             val stackOffsets = stackTOffsets.toLongList()
                             setRegister(lhs,
@@ -1418,7 +1435,7 @@ class ScalarDomain<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>> private con
                                     val loadedAbsVal = base.getStackSingletonOrNull(ByteRange(stackOffset, width))
                                     when {
                                         loadedAbsVal != null -> acc.join(loadedAbsVal.zext(width.toLong()))
-                                        loadedAsNumForPTA -> acc.join(ScalarValue(sbfTypeFac.anyNum()))
+                                        mustBeNum -> acc.join(ScalarValue(sbfTypeFac.anyNum()))
                                         else -> {
                                             val interval = FiniteInterval.mkInterval(stackOffset, width.toLong())
                                             if (mayInitStack.intersects(interval)) {
@@ -1441,7 +1458,7 @@ class ScalarDomain<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>> private con
                         // Under the (checked) assumption that stack pointers do not escape the stack:
                         // if we read from heap or input then the loaded value cannot a stack pointer
                         setRegister(lhs,
-                            ScalarValue( if (loadedAsNumForPTA) {
+                            ScalarValue(if (mustBeNum) {
                                 sbfTypeFac.anyNum()
                             } else {
                                 SbfType.nonStack()
@@ -1465,7 +1482,7 @@ class ScalarDomain<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>> private con
             }
             is SbfType.NonStack -> {
                 setRegister(lhs,
-                    ScalarValue( if (loadedAsNumForPTA) {
+                    ScalarValue(if (mustBeNum) {
                         sbfTypeFac.anyNum()
                     } else {
                         SbfType.nonStack()
@@ -1481,7 +1498,8 @@ class ScalarDomain<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>> private con
         baseScalarVal: ScalarValue<TNum, TOffset>,
         offset: Short,
         width: Byte,
-        value: Value
+        value: Value,
+        cfgInfo: CFGInfo
     ) {
         val inst = locInst.inst
         check(inst is SbfInstruction.Mem && !inst.isLoad)
@@ -1491,19 +1509,19 @@ class ScalarDomain<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>> private con
         when (baseType) {
             is SbfType.Bottom -> {}
             is SbfType.Top -> {
-                logger.info { "Top store -- ${locInst.inst}" }
+
                 if (!SolanaConfig.optimisticScalarAnalysis()) {
                     throw UnknownPointerDerefError(
                         DevErrorInfo(
                             locInst,
                             PtrExprErrReg(baseReg),
-                            "ScalarDomain: $inst to \"top\" pointer"
+                            "Scalar domain: $inst to \"top\" pointer"
                         )
                     )
                 }
-
                 // do nothing: we **optimistically** assume that this store cannot overwrite stack locations
                 // that will be later read
+                logger.info { "type($base)=$baseType: optimistically assume that ${locInst.inst} cannot modify the stack" }
             }
             is SbfType.NumType -> {
                 // Before GlobalInferenceAnalysis is run, it's totally possible to de-reference
@@ -1520,13 +1538,14 @@ class ScalarDomain<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>> private con
                             DevErrorInfo(
                                 locInst,
                                 PtrExprErrReg(baseReg),
-                                "ScalarDomain: memory access using an absolute address that is statically unknown at $inst"
+                                "Scalar domain: memory access using an absolute address that is statically unknown at $inst"
                             )
                         )
                     }
-
                     // do nothing: we **optimistically** assume that this store cannot overwrite stack locations
                     // that will be later read
+                    logger.info { "type($base)=$baseType: optimistically assume that ${locInst.inst} cannot modify the stack" }
+
                 } else {
                     val absAddresses = baseType.value.toLongList()
                     if (absAddresses.any { a -> a in SBF_STACK_START until SBF_HEAP_START }) {
@@ -1534,7 +1553,7 @@ class ScalarDomain<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>> private con
                             DevErrorInfo(
                                 locInst,
                                 PtrExprErrReg(baseReg),
-                                "ScalarDomain: unsupported stack access using absolute address $absAddresses at $inst"
+                                "Scalar domain: unsupported stack access using absolute address $absAddresses at $inst"
                             )
                         )
                     }
@@ -1551,11 +1570,12 @@ class ScalarDomain<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>> private con
                         check(!stackTOffsets.isBottom())
 
                         if (stackTOffsets.isTop()) {
+                            val loopHint = cfgInfo.enclosingLoop?.let { "inside loop $it" } ?: "not inside a loop"
                             throw UnknownStackPointerError(
                                 DevErrorInfo(
                                     locInst,
                                     PtrExprErrReg(baseReg),
-                                    "ScalarDomain: $inst to stack but \"top\" offset"
+                                    "Scalar domain: statically unknown stack offset in $baseReg at $inst ($loopHint)"
                                 )
                             )
                         }
@@ -1598,7 +1618,7 @@ class ScalarDomain<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>> private con
         }
     }
 
-    private fun analyzeMem(locInst: LocatedSbfInstruction) {
+    private fun analyzeMem(locInst: LocatedSbfInstruction, cfgInfo: CFGInfo) {
         check(!isBottom()) {"analyzeMem cannot be called on bottom"}
         val stmt = locInst.inst
         check(stmt is SbfInstruction.Mem)
@@ -1620,7 +1640,7 @@ class ScalarDomain<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>> private con
         if (isLoad) {
             analyzeLoad(locInst, baseScalarVal, offset, width.toByte(), value as Value.Reg)
         } else {
-            analyzeStore(locInst, baseReg, baseScalarVal, offset, width.toByte(), value)
+            analyzeStore(locInst, baseReg, baseScalarVal, offset, width.toByte(), value, cfgInfo)
         }
     }
 
@@ -1663,7 +1683,7 @@ class ScalarDomain<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>> private con
         base.updateStack(ByteRange(offset, width), value, isWeak = false)
     }
 
-    fun analyze(locInst: LocatedSbfInstruction) {
+    fun analyze(locInst: LocatedSbfInstruction, cfgInfo: CFGInfo = CFGInfo()) {
         val s = locInst.inst
         if (!isBottom()) {
             when (s) {
@@ -1680,7 +1700,7 @@ class ScalarDomain<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>> private con
                 is SbfInstruction.Jump.ConditionalJump -> {}
                 is SbfInstruction.Assume -> analyzeAssume(s)
                 is SbfInstruction.Assert -> analyzeAssert(s)
-                is SbfInstruction.Mem -> analyzeMem(locInst)
+                is SbfInstruction.Mem -> analyzeMem(locInst, cfgInfo)
                 is SbfInstruction.Jump.UnconditionalJump -> {}
                 is SbfInstruction.Exit -> {}
                 is SbfInstruction.Debug -> {}
@@ -1690,14 +1710,15 @@ class ScalarDomain<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>> private con
 
     override fun analyze(
         b: SbfBasicBlock,
-        listener: InstructionListener<ScalarDomain<TNum, TOffset>>
+        listener: InstructionListener<ScalarDomain<TNum, TOffset>>,
+        cfgInfo: CFGInfo
     ): ScalarDomain<TNum, TOffset> =
         analyzeBlockMut(
             domainName = "ScalarDomain",
             b,
             inState = this,
             transferFunction = { mutState, locInst ->
-                mutState.analyze(locInst)
+                mutState.analyze(locInst, cfgInfo)
             },
             listener
         )
@@ -1728,7 +1749,7 @@ fun<ScalarDomain: MutableAbstractDomain<ScalarDomain>> analyzeBlockMut(
     listener: InstructionListener<ScalarDomain>
 ): ScalarDomain {
 
-    dbg { "=== $domainName analyzing ${b.getLabel()} ===\nAt entry: $inState\n" }
+    logger.dbg(b) { "=== $domainName analyzing ${b.getLabel()} ===\nAt entry: $inState\n" }
 
     if (listener is DefaultInstructionListener) {
         // Fast path: shortcut when bottom is detected and avoid deep copies
@@ -1738,9 +1759,9 @@ fun<ScalarDomain: MutableAbstractDomain<ScalarDomain>> analyzeBlockMut(
 
         val outState = inState.deepCopy()
         for (locInst in b.getLocatedInstructions()) {
-            dbg { "${locInst.inst}\n" }
+            logger.dbg(locInst) { "${locInst.inst}\n" }
             transferFunction(outState, locInst)
-            dbg { "$outState\n" }
+            logger.dbg(locInst) { "$outState\n" }
             if (outState.isBottom()) {
                 break
             }
@@ -1751,9 +1772,9 @@ fun<ScalarDomain: MutableAbstractDomain<ScalarDomain>> analyzeBlockMut(
         for (locInst in b.getLocatedInstructions()) {
             val after = before.deepCopy()
             listener.instructionEventBefore(locInst, before)
-            dbg { "${locInst.inst}\n" }
+            logger.dbg(locInst) { "${locInst.inst}\n" }
             transferFunction(after, locInst)
-            dbg { "$after\n" }
+            logger.dbg(locInst) { "$after\n" }
             listener.instructionEventAfter(locInst, after)
             // Calling to this listener requires to make an extra copy
             // It's used by class AnnotateWithTypesListener defined in AnnotateCFG.kt
@@ -1783,7 +1804,7 @@ fun<ScalarDomain: AbstractDomain<ScalarDomain>> analyzeBlock(
     listener: InstructionListener<ScalarDomain>
 ): ScalarDomain {
 
-    dbg { "=== $domainName analyzing ${b.getLabel()} ===\nAt entry: $state\n" }
+    logger.dbg(b) { "=== $domainName analyzing ${b.getLabel()} ===\nAt entry: $state\n" }
 
     // Fast path: shortcut when bottom is detected
     if (listener is DefaultInstructionListener) {
@@ -1793,9 +1814,9 @@ fun<ScalarDomain: AbstractDomain<ScalarDomain>> analyzeBlock(
 
         var outState = state
         for (locInst in b.getLocatedInstructions()) {
-            dbg { "${locInst.inst}\n" }
+            logger.dbg(locInst) { "${locInst.inst}\n" }
             outState = transferFunction(outState, locInst)
-            dbg { "$outState\n" }
+            logger.dbg(locInst) { "$outState\n" }
             if (outState.isBottom()) {
                 break
             }
@@ -1806,11 +1827,11 @@ fun<ScalarDomain: AbstractDomain<ScalarDomain>> analyzeBlock(
     // Full tracking path: even if bottom is detected we call the listener
     var currentState = state
     for (locInst in b.getLocatedInstructions()) {
-        dbg { "${locInst.inst}\n" }
+        logger.dbg(locInst) { "${locInst.inst}\n" }
         val inState = currentState
         listener.instructionEventBefore(locInst, inState)
         val outState = transferFunction(inState, locInst)
-        dbg { "$outState\n" }
+        logger.dbg(locInst) { "$outState\n" }
         listener.instructionEventAfter(locInst, outState)
         listener.instructionEvent(locInst, inState, outState)
         currentState = outState

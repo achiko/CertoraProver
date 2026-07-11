@@ -27,7 +27,6 @@ import sbf.callgraph.CVTFunction
 import sbf.callgraph.SolanaFunction
 
 private val logger = Logger(LoggerTypes.SBF_SCALAR_WITH_KNOWN_BITS)
-private fun dbg(msg: () -> Any) { logger.info(msg) }
 
 /** This option is for KnownBits widening **/
 private const val useJoinAsWidening = true
@@ -855,8 +854,7 @@ class ScalarKnownBitsDomain<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>> pr
         private val globalState: GlobalState
 ):  MutableAbstractDomain<ScalarKnownBitsDomain<TNum, TOffset>>,
     ScalarValueProvider<TNum, TOffset>,
-    MutableScalarValueUpdater<TNum, TOffset>,
-    MemoryDomainScalarOps<TNum, TOffset> {
+    MutableScalarValueUpdater<TNum, TOffset> {
 
 
     constructor(
@@ -1042,9 +1040,9 @@ class ScalarKnownBitsDomain<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>> pr
      *
      * Currently, the reduction goes only one direction: from scalars to known bits.
      **/
-    fun analyze(locInst: LocatedSbfInstruction) {
+    fun analyze(locInst: LocatedSbfInstruction, cfgInfo: CFGInfo = CFGInfo()) {
         val inst = locInst.inst
-        dbg { "$inst\n" }
+        logger.dbg(locInst) { "$inst\n" }
         if (!isBottom()) {
             // Note that locInst can be something like `r1 = r1 and r2`
             // In that case knownBits must use the value of `r1` before the scalar transfer function is applied.
@@ -1053,21 +1051,22 @@ class ScalarKnownBitsDomain<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>> pr
             // If the code changes, and it can also refine Bin Or Un instructions then we need to copy
             // knownBits before changes.
             refineWithConstants(locInst, scalars, knownBits)  // reduction from knownBits to scalars
-            scalars.analyze(locInst)
+            scalars.analyze(locInst, cfgInfo)
         }
-        dbg { "$this\n" }
+        logger.dbg(locInst) { "$this\n" }
     }
 
     override fun analyze(
         b: SbfBasicBlock,
-        listener: InstructionListener<ScalarKnownBitsDomain<TNum, TOffset>>
+        listener: InstructionListener<ScalarKnownBitsDomain<TNum, TOffset>>,
+        cfgInfo: CFGInfo
     ): ScalarKnownBitsDomain<TNum, TOffset> =
         analyzeBlockMut(
             domainName = "ScalarDomain x KnownBitsDomain",
             b,
             inState = this,
             transferFunction = { mutState, locInst ->
-                mutState.analyze(locInst)
+                mutState.analyze(locInst, cfgInfo)
             },
             listener
         )

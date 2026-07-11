@@ -28,7 +28,7 @@ import log.*
 import sbf.callgraph.SolanaFunction
 
 private val logger = Logger(LoggerTypes.SBF_SCALAR_WITH_PREDS_ANALYSIS)
-private fun dbg(msg: () -> Any) { logger.info(msg) }
+private fun dbg(msg: () -> Any) { logger.debug(msg) }
 
 /**
  * Represent predicate of the form:
@@ -907,8 +907,7 @@ class ScalarStackStridePredicateDomain<TNum: INumValue<TNum>, TOffset: IOffset<T
     private val globalState: GlobalState
 ) : MutableAbstractDomain<ScalarStackStridePredicateDomain<TNum, TOffset>>,
     ScalarValueProvider<TNum, TOffset>,
-    MutableScalarValueUpdater<TNum, TOffset>,
-    MemoryDomainScalarOps<TNum, TOffset> {
+    MutableScalarValueUpdater<TNum, TOffset> {
 
     constructor(
         sbfTypeFac: ISbfTypeFactory<TNum, TOffset>,
@@ -1085,9 +1084,9 @@ class ScalarStackStridePredicateDomain<TNum: INumValue<TNum>, TOffset: IOffset<T
     override fun getAsScalarValueWithNumToPtrCast(reg: Value.Reg) =
         scalars.getAsScalarValueWithNumToPtrCast(reg)
 
-    fun analyze(locInst: LocatedSbfInstruction) {
+    fun analyze(locInst: LocatedSbfInstruction, cfgInfo: CFGInfo = CFGInfo()) {
         val inst = locInst.inst
-        dbg { "$inst\n" }
+        logger.dbg(locInst) { "$inst\n" }
         if (!isBottom()) {
             if (SolanaConfig.UseScalarPredicateDomain.get()) {
                 if (inst is SbfInstruction.Bin) {
@@ -1110,7 +1109,7 @@ class ScalarStackStridePredicateDomain<TNum: INumValue<TNum>, TOffset: IOffset<T
                 }
             }
 
-            scalars.analyze(locInst)
+            scalars.analyze(locInst, cfgInfo)
             predicates.analyze(locInst, scalars, globalState.memSummaries)
 
             if (SolanaConfig.UseScalarPredicateDomain.get()) {
@@ -1124,19 +1123,20 @@ class ScalarStackStridePredicateDomain<TNum: INumValue<TNum>, TOffset: IOffset<T
                 }
             }
         }
-        dbg { "$this\n" }
+        logger.dbg(locInst) { "$this\n" }
     }
 
     override fun analyze(
         b: SbfBasicBlock,
-        listener: InstructionListener<ScalarStackStridePredicateDomain<TNum, TOffset>>
+        listener: InstructionListener<ScalarStackStridePredicateDomain<TNum, TOffset>>,
+        cfgInfo: CFGInfo
     ): ScalarStackStridePredicateDomain<TNum, TOffset> =
         analyzeBlockMut(
             domainName = "ScalarDomain x StackStridePredicateDomain",
             b,
             inState = this,
             transferFunction = { mutState, locInst ->
-                mutState.analyze(locInst)
+                mutState.analyze(locInst, cfgInfo)
             },
             listener
         )

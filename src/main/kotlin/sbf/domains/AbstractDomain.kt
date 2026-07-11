@@ -83,10 +83,13 @@ interface AbstractDomain<T> {
      *
      * @param b The basic block to analyze
      * @param listener Callback for instruction processing events
+     * @param cfgInfo CFG-level facts about [b] (e.g. enclosing loop). Defaults to an empty
+     *        [CFGInfo] so callers that do not run inside a fixpoint solver do not need to supply it.
      */
     fun analyze(
         b: SbfBasicBlock,
-        listener: InstructionListener<T> = DefaultInstructionListener()
+        listener: InstructionListener<T> = DefaultInstructionListener(),
+        cfgInfo: CFGInfo = CFGInfo()
     ): T
 
     /**
@@ -122,6 +125,20 @@ data class GlobalState(
 )
 
 /**
+ * CFG-level facts propagated through the fixpoint solver into transfer functions.
+ *
+ * Holds structural information about the CFG currently being analyzed that transfer functions
+ * may wish to consult (e.g. whether the block is inside a loop).
+ */
+data class CFGInfo(
+    /**
+     * Labels of the innermost WTO cycle enclosing the block (transitively flattened across
+     * nested sub-cycles), or null if the block is not inside any loop.
+     */
+    val enclosingLoop: Set<Label>? = null,
+)
+
+/**
  *  Abstract states are stored at the level of basic block.
  *  However, we need sometimes to know the abstract state that holds before or after a given instruction.
  *  We cannot store abstract states per instruction because it is very expensive in terms of memory consumption.
@@ -152,6 +169,18 @@ interface ScalarValueProvider<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>> 
     /** Return false if no bytes in `[offset, offset+size-1]` has ever been written on the stack **/
     fun mayStackBeInitialized(offset: Long, size: ULong): Boolean
     fun getTypeFac(): ISbfTypeFactory<TNum, TOffset>
+    /**
+     * Returns true iff [reg] definitely holds a pointer value.
+     **/
+    fun isSurelyPointer(
+        @Suppress("UNUSED_PARAMETER") inst: SbfInstruction,
+        reg: Value.Reg
+    ): Boolean = getAsScalarValue(reg).type() is SbfType.PointerType
+    /**
+     * Like [getAsScalarValue] but if the scalar value is a number, attempts to cast it to a
+     * pointer when that number is a known pointer address.
+     */
+    fun getAsScalarValueWithNumToPtrCast(reg: Value.Reg): ScalarValue<TNum, TOffset>
 }
 
 /**
@@ -161,17 +190,6 @@ interface ScalarValueProvider<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>> 
 interface MutableScalarValueUpdater<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>> {
     fun setScalarValue(reg: Value.Reg, newVal: ScalarValue<TNum, TOffset>)
     fun setStackContent(offset: Long, width: Byte, value: ScalarValue<TNum, TOffset>)
-}
-
-
-/** Special operations that [MemoryDomain] needs from the scalar domain **/
-interface MemoryDomainScalarOps<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>> {
-    /**
-     * This function returns the scalar value for [reg] similar to `getAsScalarValue`.
-     * However, if the scalar value is a number then it tries to cast it to a pointer
-     * in cases where that number is a known pointer address.
-     */
-    fun getAsScalarValueWithNumToPtrCast(reg: Value.Reg): ScalarValue<TNum, TOffset>
 }
 
 data class StackLocation(val offset: Long, val width: Byte) {

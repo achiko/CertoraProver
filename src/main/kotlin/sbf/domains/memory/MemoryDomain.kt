@@ -65,7 +65,6 @@ import utils.*
  **/
 
 private val logger = Logger(LoggerTypes.SBF_MEMORY_ANALYSIS)
-private fun dbg(msg: () -> Any) { logger.info(msg)}
 
 class MemoryDomainError(msg: String): SolanaInternalError("MemoryDomain error: $msg")
 
@@ -402,7 +401,13 @@ class MemoryDomain<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>, Flags: IPTA
      * The pointer domain might know that the content of some (non-stack) memory location contains a number.
      * Recall that the scalar domain only knows about registers and stack.
      */
-    private fun reductionFromPtaGraphToScalars(b: SbfBasicBlock, locInst: LocatedSbfInstruction, reg: Value) {
+    private fun reductionFromPtaGraphToScalars(
+        @Suppress("UNUSED_PARAMETER")
+        b: SbfBasicBlock,
+        @Suppress("UNUSED_PARAMETER")
+        locInst: LocatedSbfInstruction,
+        reg: Value
+    ) {
         if (isBottom()) {
             return
         }
@@ -412,23 +417,6 @@ class MemoryDomain<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>, Flags: IPTA
             if (x != null && x.isConcrete()) {
                 val c = x.concretize()
                 if (c.getNode().mustBeInteger()) {
-                    val change = refineToNum(reg)
-                    if (change) {
-                        val topNum =  scalars.getTypeFac().anyNum().concretize()
-                        check(topNum != null) {"concretize on anyNum cannot be null"}
-                        /// HACK: changing metadata serves here as caching the reduction.
-                        val newMetadata = locInst.inst.metaData.plus(SbfMeta.REG_TYPE to  (reg to topNum))
-                        val newInst = locInst.inst.copyInst(metadata = newMetadata)
-                        (b as MutableSbfBasicBlock).replaceInstruction(locInst.pos, newInst)
-                    }
-                    return
-                }
-            }
-
-            /// If the analysis previously determined that `reg` is a number then we keep using that fact,
-            /// even if the pointer analysis lost precision and cannot infer that fact anymore.
-            locInst.inst.metaData.getVal(SbfMeta.REG_TYPE)?.let { (refinedReg, type) ->
-                if (refinedReg == reg && type is SbfRegisterType.NumType) {
                     refineToNum(reg)
                 }
             }
@@ -522,8 +510,6 @@ class MemoryDomain<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>, Flags: IPTA
         if (scalars.isBottom()) {
             setToBottom()
         } else {
-            val stmt = locInst.inst
-            check(stmt is SbfInstruction.Select)
             ptaGraph.doSelect(locInst, scalars)
         }
     }
@@ -539,7 +525,7 @@ class MemoryDomain<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>, Flags: IPTA
      * To improve the design, we should do that second reduction also here so that when `doLoad` and `doStore` are called,
      * all the cells have been reconstructed.
      */
-    private fun analyzeMem(locInst: LocatedSbfInstruction) {
+    private fun analyzeMem(locInst: LocatedSbfInstruction, cfgInfo: CFGInfo) {
         check(!isBottom()) {"called analyzeMem on bottom in memory domain"}
         val stmt = locInst.inst
         check(stmt is SbfInstruction.Mem) {"Memory domain expects a memory instruction instead of $stmt"}
@@ -555,7 +541,7 @@ class MemoryDomain<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>, Flags: IPTA
         // the scalar value of the base before it might have been overwritten.
         val baseType = scalars.getAsScalarValueWithNumToPtrCast(base).type()
 
-        scalars.analyze(locInst)
+        scalars.analyze(locInst, cfgInfo)
 
         if (scalars.isBottom()) {
             setToBottom()
@@ -567,7 +553,7 @@ class MemoryDomain<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>, Flags: IPTA
             } else {
                 val value = stmt.value
                 val valueType = scalars.getAsScalarValue(value).type()
-                ptaGraph.doStore(locInst, base, value, baseType, valueType)
+                ptaGraph.doStore(locInst, base, value, baseType, valueType, cfgInfo)
             }
         }
     }
@@ -580,9 +566,9 @@ class MemoryDomain<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>, Flags: IPTA
              it is SbfInstruction.Exit}
     }
 
-    private fun analyze(b: SbfBasicBlock, locInst: LocatedSbfInstruction) {
+    private fun analyze(b: SbfBasicBlock, locInst: LocatedSbfInstruction, cfgInfo: CFGInfo = CFGInfo()) {
         val inst = locInst.inst
-        dbg { "$inst\n" }
+        logger.dbg(locInst) { "$inst\n" }
         if (!isBottom()) {
             if (opts.useEqualityDomain) {
                 memcmpPreds.analyze(locInst, this)
@@ -602,22 +588,21 @@ class MemoryDomain<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>, Flags: IPTA
                 is SbfInstruction.Jump.ConditionalJump -> {}
                 is SbfInstruction.Assume -> analyzeAssume(locInst)
                 is SbfInstruction.Assert -> analyzeAssert(locInst)
-                is SbfInstruction.Mem -> analyzeMem(locInst)
+                is SbfInstruction.Mem -> analyzeMem(locInst, cfgInfo)
                 is SbfInstruction.Jump.UnconditionalJump -> {}
                 is SbfInstruction.Exit -> {}
                 is SbfInstruction.Debug -> {}
             }
         }
-        dbg {"$this\n"}
+        logger.dbg(locInst) {"$this\n"}
     }
 
     override fun analyze(
         b: SbfBasicBlock,
-        listener: InstructionListener<MemoryDomain<TNum, TOffset, Flags>>
+        listener: InstructionListener<MemoryDomain<TNum, TOffset, Flags>>,
+        cfgInfo: CFGInfo
     ): MemoryDomain<TNum, TOffset, Flags> {
-
-
-        dbg { "=== Memory Domain analyzing ${b.getLabel()} ===\n$this\n" }
+        logger.dbg(b) { "=== Memory Domain analyzing ${b.getLabel()} ===\n$this\n" }
         if (listener is DefaultInstructionListener) {
             if (isBottom()) {
                 return makeBottom(ptaGraph.nodeAllocator, scalars.getTypeFac(), opts, globalState)
@@ -630,7 +615,7 @@ class MemoryDomain<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>, Flags: IPTA
 
             for (locInst in b.getLocatedInstructions()) {
                 out.checkConsistencyBetweenSubdomains("Before $locInst")
-                out.analyze(b, locInst)
+                out.analyze(b, locInst, cfgInfo)
                 if (out.isBottom()) {
                     break
                 }
@@ -645,7 +630,7 @@ class MemoryDomain<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>, Flags: IPTA
             for (locInst in b.getLocatedInstructions()) {
                 listener.instructionEventBefore(locInst, out)
                 out.checkConsistencyBetweenSubdomains("Before $locInst")
-                out.analyze(b, locInst)
+                out.analyze(b, locInst, cfgInfo)
                 listener.instructionEventAfter(locInst, out)
             }
             return out
@@ -663,14 +648,19 @@ class MemoryDomain<TNum: INumValue<TNum>, TOffset: IOffset<TOffset>, Flags: IPTA
 
     override fun getTypeFac() = scalars.getTypeFac()
 
+    override fun getAsScalarValueWithNumToPtrCast(reg: Value.Reg) =
+        getScalars().getAsScalarValueWithNumToPtrCast(reg)
+
     /** External API for TAC encoding **/
     fun getRegCell(reg: Value.Reg): PTASymCell<Flags>? {
         val scalarVal = getScalars().getAsScalarValue(reg)
         return getPTAGraph().getRegCell(reg, scalarVal.type(), locInst = null)
     }
 
-    /** Returns true iff we are sure that [reg] holds a pointer value */
-    fun isSurelyPointer(inst: SbfInstruction, reg: Value.Reg): Boolean {
+    /**
+     * Returns true iff [reg] definitely holds a pointer value.
+     **/
+    override fun isSurelyPointer(inst: SbfInstruction, reg: Value.Reg): Boolean {
         // Note that we're currently only using the scalar domain to check if a register is a pointer or not, as we
         // have not yet found a way to get reliable "must be pointer" info from the pointer domain.
         // `IsPointerAnalysis` could just use the scalar domain/analysis directly, which might improve performance a

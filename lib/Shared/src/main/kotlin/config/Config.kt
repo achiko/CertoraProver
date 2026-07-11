@@ -190,6 +190,17 @@ object Config {
         pythonName = "--auto_dispatcher"
     ) {}
 
+    val ErrorOnUnlocatableInternalFunctionBoundary = object : ConfigType.BooleanCmdLine(
+        false,
+        Option(
+            "errorOnUnlocatableInternalFunctionBoundary",
+            true,
+            "When a requested summary targets an internal function whose boundary cannot be located (e.g. its " +
+                "return was fused into a caller under via-IR), fail the run instead of skipping the summary with " +
+                "a warning [default: false]"
+        )
+    ) {}
+
     val SourceFilesInCallResolution: ConfigType.BooleanCmdLine = object : ConfigType.BooleanCmdLine(
         false,
         Option(
@@ -298,7 +309,8 @@ object Config {
         Option(
             "customBuildScript",
             true,
-            "Script file to run in order to build or perform any kind of preprocessing prior to the tool"
+            "DEPRECATED and ignored: this hook is no longer executed. Perform any build or " +
+                "preprocessing steps before invoking the tool."
         )
     ) {}
 
@@ -2372,6 +2384,16 @@ object Config {
                 "prints: 0:nothing, 1:without annotations 2:including annotations [default = 0]"
         )
     )
+
+    val printCEX = ConfigType.BooleanCmdLine(
+        default = false,
+        option = Option(
+            "printCEX",
+            true,
+            "Prints the CEX to stdout. used only for debugging. [default = false]"
+        )
+    )
+
 
 
     val patternRewriter = object : ConfigType.IntCmdLine(
