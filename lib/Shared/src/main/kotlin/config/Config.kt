@@ -360,6 +360,20 @@ object Config {
                 "functions folded. The reports have suffix '_with_internal' [default:false]"
         )
     ) {}
+
+    /**
+     * Diagnostic-only: emit the per-rule `SurvivingCallGraph-<rule>-<phase>.json` artifacts (and their
+     * `survivingCallGraph_map.json` manifest) alongside the pre/post-optimize TAC dumps.
+     */
+    val DumpSurvivingCallGraph: ConfigType.BooleanCmdLine = object : ConfigType.BooleanCmdLine(
+        false,
+        Option(
+            "dumpSurvivingCallGraph",
+            true,
+            "Dump, per rule, the json of the functions surviving the rule's TAC pipeline and the call graph " +
+                "among them [default: false]"
+        )
+    ), RuleCacheAgnosticConfig {}
     val LowFootprint = object : ConfigType.BooleanCmdLine(
         false,
         Option(
@@ -1523,6 +1537,19 @@ object Config {
             "havocAllByDefault",
             true,
             "When enabled, use HAVOC_ALL for all non-STATIC external calls by default. [default: false]"
+        )
+    ) {}
+    val HavocUnresolvedCalleeBalance = object : ConfigType.BooleanCmdLine(
+        false,
+        Option(
+            "havocUnresolvedCalleeBalance",
+            true,
+            "When enabled, the native balance of the callee of a havoc'ing call (an unresolved call, an AUTO or " +
+                "HAVOC_ECF summary, a dispatcher fallback, or a CREATE) stays fully havoced, so counterexamples where " +
+                "the callee spends or forwards its own funds are reported. When disabled, that balance is assumed to " +
+                "be unchanged by the call, which suppresses such counterexamples - often far-fetched ones - but is " +
+                "unsound: the ECF (no-reentrancy) semantics we document only guarantee that the caller's balance does " +
+                "not decrease, and say nothing about the callee's. [default: false]"
         )
     ) {}
     val OptimisticExtcodesize = object : ConfigType.BooleanCmdLine(
