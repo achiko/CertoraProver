@@ -76,6 +76,7 @@ DEFAULT_VYPER_COMPILER = 'vyper'
 
 ENVVAR_CERTORA = "CERTORA"
 KEY_SIGNUP_URL = "https://www.certora.com/signup"
+KEY_MANAGEMENT_URL = "https://app.certora.com"
 CERTORA_INTERNAL_ROOT = Path(".certora_internal")
 CERTORA_BUILD_CACHE_DIR_NAME = "build_cache"
 PRODUCTION_PACKAGE_NAME = "certora-cli"
@@ -99,7 +100,7 @@ EMV_JAR = Path("emv.jar")
 CERTORA_SOURCES = Path(".certora_sources")
 SOLANA_INLINING = "solana_inlining"
 SOLANA_SUMMARIES = "solana_summaries"
-CARGO_TOML_FILE = "cargo.toml"
+CARGO_TOML_FILE = "Cargo.toml"
 
 ALPHA_PACKAGE_NAME = 'certora-cli-alpha'
 ALPHA_PACKAGE_MASTER_NAME = ALPHA_PACKAGE_NAME + '-master'
@@ -149,6 +150,61 @@ class SupportedServers(Enum):
     """
     STAGING = 'https://vaas-stg.certora.com'
     PRODUCTION = 'https://prover.certora.com'
+
+
+# The API host for each site host. The CLI sends its API calls (job submission and job reads) to the API
+# host directly. Links that a user opens in a browser stay on the site host.
+API_HOSTS = {
+    "prover.certora.com": "data-api.certora.com",
+    "vaas-stg.certora.com": "data-api-stg.certora.com",
+    "vaas-dev.certora.com": "data-api-dev.certora.com",
+    # Report links on production use the app host (see APP_HOSTS). Code that derives the API host from a
+    # printed link, for example the mutation tester, finds it here.
+    "app.certora.com": "data-api.certora.com",
+}
+
+# The host for links that a user opens in a browser, for each site host whose browser pages moved to the app.
+# The app serves the report pages (`/output/...`). A site host that is not listed keeps its own links.
+APP_HOSTS = {
+    "prover.certora.com": "app.certora.com",
+}
+
+
+def replace_host(site_domain: str, hosts: Dict[str, str]) -> str:
+    """
+    @param site_domain: a site base URL, for example "https://prover.certora.com"
+    @param hosts: maps a site host to the host that replaces it
+    @return: site_domain with its host replaced by the matching value in hosts. A host that is not in hosts is
+    returned unchanged.
+    """
+    parsed_url = urllib3.util.parse_url(site_domain)
+    new_host = hosts.get(parsed_url.host or "")
+    if new_host is None:
+        return site_domain
+    return f"{parsed_url.scheme}://{new_host}"
+
+
+def get_api_domain(site_domain: str) -> str:
+    """
+    @param site_domain: a site base URL, for example "https://prover.certora.com"
+    @return: the matching API base URL, for example "https://data-api.certora.com". A site host that is not in
+    API_HOSTS is returned unchanged, because each site host also serves the API routes.
+    """
+    return replace_host(site_domain, API_HOSTS)
+
+
+def get_app_url(url: str) -> str:
+    """
+    @param url: a full browser URL on a site host, for example a report or jobs link.
+    @return: the same URL with its host swapped to the app host (see APP_HOSTS), keeping the path and query.
+    A host that is not in APP_HOSTS is returned unchanged.
+    """
+    parsed = urllib3.util.parse_url(url)
+    new_host = APP_HOSTS.get(parsed.host or "")
+    if new_host is None:
+        return url
+    rest = (parsed.path or "") + (f"?{parsed.query}" if parsed.query else "")
+    return f"{parsed.scheme}://{new_host}{rest}"
 
 
 def get_build_dir() -> Path:
@@ -412,6 +468,26 @@ def get_package_and_version() -> Tuple[bool, str, str]:
                 raise Exception(f"Invalid format for {version_metadata_file}, got {version_metadata}")
     except OSError as e:  # json errors - better to just propagate up
         raise Exception(f"Failed to open {version_metadata_file}: {e.strerror}")
+
+
+def get_user_agent() -> str:
+    """
+    @return: the User-Agent the CLI sends, in the form "<package name>/<version>". A run from a
+    source checkout has no package metadata, so it reports "certora-cli/local".
+    """
+    is_package, package_name, version = get_package_and_version()
+    if is_package:
+        return f"{package_name}/{version}"
+    return f"{PRODUCTION_PACKAGE_NAME}/local"
+
+
+def api_headers(key: str) -> Dict[str, str]:
+    """
+    @param key: the value of the CERTORAKEY environment variable
+    @return: the headers every Certora API call carries. The key is the credential. The User-Agent
+    tells the server which certora-cli package and version made the call.
+    """
+    return {"Authorization": f"Bearer {key}", "User-Agent": get_user_agent()}
 
 
 def check_results_from_file(output_path: str, expected_filename: str) -> bool:

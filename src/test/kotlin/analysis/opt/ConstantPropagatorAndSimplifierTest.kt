@@ -18,13 +18,17 @@
 package analysis.opt
 
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import tac.Tag
 import vc.data.TACBuilderAuxiliaries
+import vc.data.TACExpr
 import vc.data.TACProgramBuilder
 import vc.data.TACProgramBuilder.Companion.testProgString
+import vc.data.TACSymbol
 import vc.data.asTACExpr
+import java.math.BigInteger
 
 class ConstantPropagatorAndSimplifierTest : TACBuilderAuxiliaries() {
 
@@ -87,6 +91,54 @@ class ConstantPropagatorAndSimplifierTest : TACBuilderAuxiliaries() {
     }
 
     /**
+     * The constant folder in [ConstantPropagatorAndSimplifier.Companion.simplifyTopOrNull] runs before the
+     * algebraic identities, so it has to decline a literally-zero divisor on its own: [vc.data.TACExpr.BinOp.IntMod]
+     * has no value there at all, and folding [vc.data.TACExpr.BinOp.IntDiv] to zero would pick one of the values the
+     * smt encoding leaves open.
+     */
+    @Test
+    fun intDivModByConstantZeroAreNotFolded() {
+        val prog = TACProgramBuilder {
+            j assign IntDiv(7.asTACExpr(Tag.Int), 0.asTACExpr(Tag.Int))
+            k assign IntMod(7.asTACExpr(Tag.Int), 0.asTACExpr(Tag.Int))
+            assert(x)
+        }
+        assertEquals(
+            testProgString(prog.code),
+            testProgString(ConstantPropagatorAndSimplifier(prog.code).rewrite())
+        )
+    }
+
+    /** The same divisor, reached by propagating a constant rather than written as a literal. */
+    @Test
+    fun intModByPropagatedZeroIsNotFolded() {
+        val prog = TACProgramBuilder {
+            i assign IntMod(10.toBigInteger().pow(13).asTACExpr(Tag.Int), 10.toBigInteger().pow(6).asTACExpr(Tag.Int))
+            k assign IntMod(7.asTACExpr(Tag.Int), iS)
+            assert(x)
+        }
+        // `10^13 % 10^6` folds to 0 and propagates into the divisor below, where the fold must stop.
+        val expected = TACProgramBuilder {
+            i assign 0.asTACExpr(Tag.Int)
+            k assign IntMod(7.asTACExpr(Tag.Int), 0.asTACExpr(Tag.Int))
+            assert(x)
+        }
+        assertEquals(
+            testProgString(expected.code),
+            testProgString(ConstantPropagatorAndSimplifier(prog.code).rewrite())
+        )
+    }
+
+    /** [vc.data.TACExpr.evalAsConst] shares the throw site, and has to report "no value" rather than raise. */
+    @Test
+    fun intModByZeroHasNoConstantValue() {
+        val zero = 0.asTACExpr(Tag.Int)
+        assertNull(TACExpr.BinOp.IntMod(7.asTACExpr(Tag.Int), zero, Tag.Int).evalAsConst())
+        assertNull(TACExpr.BinOp.IntDiv(7.asTACExpr(Tag.Int), zero, Tag.Int).evalAsConst())
+        assertEquals(BigInteger.ONE, TACExpr.BinOp.IntMod(7.asTACExpr(Tag.Int), 2.asTACExpr(Tag.Int), Tag.Int).evalAsConst())
+    }
+
+    /**
      * `0 ^ e` is 0 for every positive e, but 1 at e = 0. It can't stay as it is either, because the smt
      * axiomatization of exponentiation doesn't handle a zero base.
      */
@@ -123,6 +175,31 @@ class ConstantPropagatorAndSimplifierTest : TACBuilderAuxiliaries() {
         assertEquals(
             testProgString(expected.code),
             testProgString(ConstantPropagatorAndSimplifier(prog.code).rewrite())
+        )
+    }
+
+    /**
+     * A quantified variable is not replaced, even when [ConstantPropagatorAndSimplifier.simplifyExp] has a value for it,
+     * and a quantifier that no longer binds anything is simplified away. Map definitions are left as they are.
+     */
+    @Test
+    fun simplifyExpLeavesBoundVariablesAlone() {
+        val values = mapOf(a to 1.asTACExpr, b to 2.asTACExpr)
+        fun simplify(e: TACExpr) = ConstantPropagatorAndSimplifier.simplifyExp(e) { values[it] }
+
+        fun eq(l: TACExpr, r: TACExpr) = TACExpr.BinRel.Eq(l, r, Tag.Bool)
+        assertEquals(
+            TACExpr.QuantifiedFormula(true, listOf(a), eq(aS, 2.asTACExpr), Tag.Bool),
+            simplify(TACExpr.QuantifiedFormula(true, listOf(a), eq(aS, bS), Tag.Bool))
+        )
+        fun mapDef(c: TACExpr) =
+            TACExpr.MapDefinition(listOf(aS), TACExpr.TernaryExp.Ite(eq(aS, c), aS, 5.asTACExpr), Tag.WordMap)
+        assertEquals(mapDef(bS), simplify(mapDef(bS)))
+        assertEquals(TACExpr.Sym.Const(TACSymbol.True), simplify(eq(aS, 1.asTACExpr)))
+        // the body folds to `true`, which no longer uses `c`, so the quantifier goes
+        assertEquals(
+            TACExpr.Sym.Const(TACSymbol.True),
+            simplify(TACExpr.QuantifiedFormula(true, listOf(c), eq(bS, 2.asTACExpr), Tag.Bool))
         )
     }
 }
