@@ -20,7 +20,7 @@ RUN apt-get update \
 
 ENV PATH="/root/.cargo/bin:${PATH}"
 
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain 1.82.0
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain 1.85.0
 
 COPY . .
 
@@ -49,6 +49,7 @@ RUN apt-get update \
         python3-venv \
         z3 \
         cvc5 \
+        psmisc \
         ca-certificates \
         bash \
         curl \
